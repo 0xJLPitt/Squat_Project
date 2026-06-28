@@ -1,0 +1,7 @@
+# Data and Demo files
+demo/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class

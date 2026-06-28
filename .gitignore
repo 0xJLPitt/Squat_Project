@@ -1,0 +1,23 @@
+# General
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+._.DS_Store
+.ipynb_checkpoints
+
+# Squat_Autocutting
+Squat_Autocutting/demo/
+
+# Squat_PatchTST
+Squat_PatchTST/3D_traindata
+Squat_PatchTST/models
+Squat_PatchTST/2D_traindata
+Squat_PatchTST/2D_traindata_with_hand_new
+Squat_PatchTST/2D_traindata_bodylength_vision1
+Squat_PatchTST/missing_merge.txt
+Squat_PatchTST/data
+Squat_PatchTST/zipout.py
+Squat_PatchTST/output.zip
+Squat_PatchTST/DeadliftDataset
+Squat_PatchTST/BenchpressDataset
