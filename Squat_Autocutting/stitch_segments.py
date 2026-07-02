@@ -76,8 +76,7 @@ def main():
     # 請在下方直接貼上包含 segments.json 的「母資料夾」路徑
     # 程式會讀取該資料夾底下的 segments.json，並在各個子資料夾中產出剪輯影片
     # ==============================================================================
-    parser.add_argument("--input", default=r"E:\squat_dataset2\be\S92\session01", 
-                        help="包含各錄影的母資料夾路徑")
+    parser.add_argument("--input", required=True, help="包含各錄影的母資料夾路徑")
     args = parser.parse_args()
 
     input_dir = Path(args.input)
@@ -91,6 +90,8 @@ def main():
     # 遍歷底下所有資料夾
     processed_any = False
     for root, dirs, files in os.walk(input_dir):
+        if "棋盤" in root:
+            continue
         if 'RD.avi' in files and 'segments.json' in files:
             stitch_recording(root)
             processed_any = True

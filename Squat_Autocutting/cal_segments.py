@@ -6,11 +6,7 @@ import matplotlib.pyplot as plt
 import json
 from squat_analysis import SquatFeatureExtractor
 
-# ==============================================================================
-# 請在下方直接貼上您想要處理的資料夾路徑 (支援母資料夾或單一影片資料夾)
-# 前面加上 r 可以防止 Windows 路徑的斜線（\）產生跳脫字元錯誤
-# ==============================================================================
-INPUT_PATH = r"E:\squat_dataset2\be"
+
 
 # 定義 COCO 關鍵點索引對照表
 KEYPOINT_MAP = {
@@ -294,7 +290,7 @@ def visualize_basic_segmentation(rec_path, df_pose, df_bar, reps, output_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Squat Feature Extraction & Visualization")
-    parser.add_argument("--input", default=INPUT_PATH, help="Input directory containing recordings")
+    parser.add_argument("--input", required=True, help="Input directory containing recordings")
     parser.add_argument("--fps", type=int, default=30, help="Video FPS")
     parser.add_argument("--normalize", action="store_true", help="Whether to output normalized CSVs")
     args = parser.parse_args()
