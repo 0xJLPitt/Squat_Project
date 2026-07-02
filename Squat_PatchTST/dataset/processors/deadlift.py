@@ -149,8 +149,8 @@ def generate_csv(dataset_dir, output_csv):
                                 min_len = min(len(df_3d_filtered), len(features_bar_arr))
                                 merged_features = np.concatenate([df_3d_filtered.values[:min_len], features_bar_arr[:min_len]], axis=1)
                                 
-                                from ..tools.Deadlift_tool.utils import interpolate_features
-                                from ..tools.Deadlift_tool.data_split import process_delta, process_delta_ratio, process_zscore, normalize_to_neg1_1
+                                from dataset.tools.Deadlift_tool.utils import interpolate_features
+                                from dataset.tools.Deadlift_tool.data_split import process_delta, process_delta_ratio, process_zscore, normalize_to_neg1_1
                                 
                                 # Data Augmentation (Placeholder)
                                 merged_features = apply_augmentation(merged_features)
@@ -204,4 +204,4 @@ def generate_csv(dataset_dir, output_csv):
     print(f"Saved {output_csv}")
 
 if __name__ == "__main__":
-    generate_csv("DeadliftDataset", "./data/deadlift_dataset.csv")
+    generate_csv("DeadliftDataset_0408", "./data/deadlift_dataset.csv")

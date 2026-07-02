@@ -110,7 +110,7 @@ def run_data_produce(dir):
     
     # Apply Savgol Filter to all series
     try:
-        from ..Benchpress_tool.hampel import run_savgol_on_series
+        from dataset.tools.Benchpress_tool.hampel import run_savgol_on_series
         left_knee_angles = run_savgol_on_series(left_knee_angles, window_length=21)
         left_hip_angles = run_savgol_on_series(left_hip_angles, window_length=21)
         body_lengths = run_savgol_on_series(body_lengths, window_length=21)
@@ -123,7 +123,7 @@ def run_data_produce(dir):
     ]
     # Filter ratios too
     try:
-        from ..Benchpress_tool.hampel import run_savgol_on_series
+        from dataset.tools.Benchpress_tool.hampel import run_savgol_on_series
         knee_to_hip_ratios = run_savgol_on_series(knee_to_hip_ratios, window_length=21)
     except:
         pass

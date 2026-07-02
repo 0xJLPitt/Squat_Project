@@ -132,7 +132,8 @@ if __name__ == "__main__":
         save_dir = f'./models/benchpress/TST_Benchpress/{args.tag}'
         num_classes = 4
         input_len = 100
-        
+    
+    
     dataset_folds = []
     if args.subject_split:
         unique_subjects = sorted(list(set(full_dataset.subjects)))
@@ -151,7 +152,7 @@ if __name__ == "__main__":
         valid_indices = [idx for idx, s in enumerate(full_dataset.subjects) if s in val_subs]
         test_indices = [idx for idx, s in enumerate(full_dataset.subjects) if s in test_subs]
         
-        # We only need one "fold" for a fixed 7:2:1 split
+        # We only need one "fold" for a fixed 7:1:2 split
         dataset_folds = [(train_indices, valid_indices, test_indices)]
         num_folds = 1
     else:

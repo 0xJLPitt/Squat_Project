@@ -3,6 +3,22 @@ import pandas as pd
 from scipy.signal import savgol_filter
 from scipy.interpolate import interp1d
 
+def apply_rolling_smoothing(series, window=12):
+    return series.rolling(window=window, center=True).mean()
+
+def apply_hampel_filter(series, window_size=15, n_sigmas=45):
+    series = series.copy()
+    L = 1.4826
+    rolling_median = series.rolling(window_size, center=True).median()
+    diff = np.abs(series - rolling_median)
+    mad = L * diff.rolling(window_size, center=True).median()
+    # 處理 mad 為 0 或 NaN 的情況避免除以 0 警告
+    mad = mad.replace(0, 1e-6).fillna(1e-6)
+    # 處理 NA，outliers 在 NA 處會是 False
+    outliers = (diff > n_sigmas * mad).fillna(False)
+    series[outliers] = rolling_median[outliers]
+    return series
+
 class SquatFeatureExtractor:
     """
     深蹲特徵擷取器 (SquatFeatureExtractor)
@@ -110,63 +126,262 @@ class SquatFeatureExtractor:
 
         return pose_clean, bar_clean
 
-    def _segment_reps(self, bar_df):
+    def _segment_reps(self, pose_df, bar_df):
         """
         第二階段：動作切割 (基於速度換向與穩定性的動態切割)
         不再死守固定的起點高度，而是偵測動作的「開始-換向-穩定」。
+        加入髖部與膝蓋角度啟動偵測，避免代償動作導致槓鈴延遲啟動。
+        三個數值都先使用 Hampel 與 Rolling 平滑過再計算。
         """
-        bar_y = bar_df['bar_y'].values
+        bar_y_series = bar_df['bar_y'].copy()
+        
+        # 計算膝蓋與髖部角度
+        hip_angles = pd.Series([self._calculate_angle((r.shoulder_x, r.shoulder_y), (r.hip_x, r.hip_y), (r.knee_x, r.knee_y)) 
+                      for _, r in pose_df.iterrows()])
+        knee_angles = pd.Series([self._calculate_angle((r.hip_x, r.hip_y), (r.knee_x, r.knee_y), (r.ankle_x, r.ankle_y)) 
+                       for _, r in pose_df.iterrows()])
+        
+        # 依序使用 Hampel 平滑與 Rolling 平滑
+        bar_y_smooth = apply_rolling_smoothing(apply_hampel_filter(bar_y_series)).bfill().ffill()
+        hip_smooth = apply_rolling_smoothing(apply_hampel_filter(hip_angles)).bfill().ffill()
+        knee_smooth = apply_rolling_smoothing(apply_hampel_filter(knee_angles)).bfill().ffill()
+        
+        # 增加: 計算膝蓋/髖關節與槓鈴 X 軸的相對位移 (取絕對值)
+        hip_rel_x = (pose_df['hip_x'] - bar_df['bar_x']).abs()
+        knee_rel_x = (pose_df['knee_x'] - bar_df['bar_x']).abs()
+        hip_rel_x_smooth = apply_rolling_smoothing(apply_hampel_filter(hip_rel_x)).bfill().ffill()
+        knee_rel_x_smooth = apply_rolling_smoothing(apply_hampel_filter(knee_rel_x)).bfill().ffill()
+        
+        # 存回 array
+        bar_y = bar_y_smooth.values
+        hip_angles_val = hip_smooth.values
+        knee_angles_val = knee_smooth.values
+        
+        # 記錄至 DF 以便畫圖使用
+        bar_df['bar_y_smoothed'] = bar_y
+        pose_df['hip_angle_smoothed'] = hip_angles_val
+        pose_df['knee_angle_smoothed'] = knee_angles_val
+        
+        # 計算一階導數 (速度/角速度/位移速度)
         bar_v_y = np.gradient(bar_y) * self.fps
+        hip_v = np.gradient(hip_angles_val) * self.fps
+        knee_v = np.gradient(knee_angles_val) * self.fps
+        hip_rel_v = np.gradient(hip_rel_x_smooth.values) * self.fps
+        knee_rel_v = np.gradient(knee_rel_x_smooth.values) * self.fps
         
         reps = []
         n_frames = len(bar_y)
         
-        # 狀態機變數
-        # 0: IDLE (等待下蹲), 1: DESCENDING (下蹲中), 2: ASCENDING (起立中)
+        # 狀態機變數 (已捨棄，但保留變數)
         state = 0 
         start_idx = 0
         bottom_idx = 0
         
-        # 動態閾值
-        v_thresh = np.std(bar_v_y) * 0.5 if np.std(bar_v_y) > 0 else 1.0
+        from scipy.signal import find_peaks
+
+        # 動態閾值 (加入最低雜訊門檻，避免某些訊號標準差太小導致微小雜訊被判定為活躍)
+        v_start_thresh = max(np.std(bar_v_y) * 0.5, 3.0)
+        hip_start_thresh = max(np.std(hip_v) * 0.5, 3.0)
+        knee_start_thresh = max(np.std(knee_v) * 0.5, 3.0)
+        hip_rel_start_thresh = max(np.std(hip_rel_v) * 0.5, 3.0)
+        knee_rel_start_thresh = max(np.std(knee_rel_v) * 0.5, 3.0)
         
-        for i in range(1, n_frames):
-            v = bar_v_y[i]
+        v_end_thresh = max(np.std(bar_v_y) * 0.5, 3.0)
+        hip_end_thresh = max(np.std(hip_v) * 0.5, 3.0)
+        knee_end_thresh = max(np.std(knee_v) * 0.5, 3.0)
+        hip_rel_end_thresh = max(np.std(hip_rel_v) * 0.5, 3.0)
+        knee_rel_end_thresh = max(np.std(knee_rel_v) * 0.5, 3.0)
+        
+        # 1. 尋找所有深蹲的波谷 (bar_y 的波峰，因為 y 向下為正)
+        # prominence=100 確保起槓或收槓時的小碎步被忽略
+        bottoms, _ = find_peaks(bar_y, prominence=100)
+        
+        reps = []
+        for i_peak, bottom_idx in enumerate(bottoms):
+            is_first = (i_peak == 0)
+            is_last = (i_peak == len(bottoms) - 1)
             
-            if state == 0: # IDLE
-                if v > v_thresh and i > 10: # 開始下蹲
-                    state = 1
-                    start_idx = i
-                    bottom_idx = i
-            
-            elif state == 1: # DESCENDING
-                if bar_y[i] > bar_y[bottom_idx]:
-                    bottom_idx = i
-                
-                if v < -v_thresh: # 已經開始向上起立
-                    state = 2
-            
-            elif state == 2: # ASCENDING
-                # 判斷是否穩定下來 (結束動作)
-                if abs(v) < v_thresh and i > bottom_idx + 5:
-                    # 確保動作有足夠長度 (至少 0.5 秒)
-                    if i - start_idx > self.fps // 2:
-                        reps.append({
-                            'start': start_idx,
-                            'bottom': bottom_idx,
-                            'end': i
-                        })
-                    state = 0 # 回到等待下一組
+            # --- 2. 尋找起始點 ---
+            start_idx = -1
+            if is_first:
+                # 第一下：往回推找 is_idle (因為前面沒有其他波谷，必須仰賴靜止來排除預備碎步)
+                highest_point_before = bottom_idx
+                in_descent = False
+                for i in range(bottom_idx, 0, -1):
+                    if bar_y[i] < bar_y[highest_point_before]:
+                        highest_point_before = i
+                        
+                    v = bar_v_y[i]
+                    hv = hip_v[i]
+                    kv = knee_v[i]
+                    hrv = hip_rel_v[i]
+                    krv = knee_rel_v[i]
                     
+                    is_active = (
+                        (v > v_start_thresh) or (hv < -hip_start_thresh) or (kv < -knee_start_thresh) or
+                        (abs(hrv) > hip_rel_start_thresh) or (abs(krv) > knee_rel_start_thresh)
+                    )
+                    is_idle = (
+                        (abs(v) < v_start_thresh) and (abs(hv) < hip_start_thresh) and (abs(kv) < knee_start_thresh) and
+                        (abs(hrv) < hip_rel_start_thresh) and (abs(krv) < knee_rel_start_thresh)
+                    )
+                    
+                    if not in_descent:
+                        if is_active:
+                            in_descent = True
+                    else:
+                        if is_idle and (bar_y[bottom_idx] - bar_y[i] >= 100):
+                            start_idx = i
+                            break
+                            
+                if start_idx == -1:
+                    start_idx = highest_point_before
+            else:
+                # 中間：不使用 is_idle。先找到與上一組之間的最高點，然後「往後推」找第一個滿足 0.2 std 的點 (啟動點)
+                prev_bottom = bottoms[i_peak - 1]
+                highest_point_before = bottom_idx
+                for i in range(bottom_idx, prev_bottom, -1):
+                    if bar_y[i] < bar_y[highest_point_before]:
+                        highest_point_before = i
+                        
+                start_idx = highest_point_before
+                
+                v_ready = (bar_v_y[highest_point_before] <= v_start_thresh)
+                hv_ready = (hip_v[highest_point_before] >= -hip_start_thresh)
+                kv_ready = (knee_v[highest_point_before] >= -knee_start_thresh)
+                hrv_ready = (abs(hip_rel_v[highest_point_before]) <= hip_rel_start_thresh)
+                krv_ready = (abs(knee_rel_v[highest_point_before]) <= knee_rel_start_thresh)
+                
+                active_consecutive = 0
+                for i in range(highest_point_before, bottom_idx):
+                    v = bar_v_y[i]
+                    hv = hip_v[i]
+                    kv = knee_v[i]
+                    hrv = hip_rel_v[i]
+                    krv = knee_rel_v[i]
+                    
+                    if v <= v_start_thresh: v_ready = True
+                    if hv >= -hip_start_thresh: hv_ready = True
+                    if kv >= -knee_start_thresh: kv_ready = True
+                    if abs(hrv) <= hip_rel_start_thresh: hrv_ready = True
+                    if abs(krv) <= knee_rel_start_thresh: krv_ready = True
+                    
+                    is_active_frame = False
+                    if v_ready and (v > v_start_thresh): is_active_frame = True
+                    if hv_ready and (hv < -hip_start_thresh): is_active_frame = True
+                    if kv_ready and (kv < -knee_start_thresh): is_active_frame = True
+                    if hrv_ready and (abs(hrv) > hip_rel_start_thresh): is_active_frame = True
+                    if krv_ready and (abs(krv) > knee_rel_start_thresh): is_active_frame = True
+                    
+                    if is_active_frame:
+                        active_consecutive += 1
+                        if active_consecutive >= 3:
+                            start_cand = i - 2
+                            if (bar_y[bottom_idx] - bar_y[start_cand] >= 100):
+                                start_idx = start_cand
+                                break
+                    else:
+                        active_consecutive = 0
+                        
+            # --- 3. 尋找結束點 ---
+            end_idx = -1
+            if is_last:
+                # 最後一下：往前推找 is_idle (排除做完走回架上的碎步)
+                highest_point_after = bottom_idx
+                in_ascent = False
+                for i in range(bottom_idx, n_frames):
+                    if bar_y[i] < bar_y[highest_point_after]:
+                        highest_point_after = i
+                        
+                    v = bar_v_y[i]
+                    hv = hip_v[i]
+                    kv = knee_v[i]
+                    hrv = hip_rel_v[i]
+                    krv = knee_rel_v[i]
+                    
+                    is_active = (
+                        (v < -v_end_thresh) or (hv > hip_end_thresh) or (kv > knee_end_thresh) or
+                        (abs(hrv) > hip_rel_end_thresh) or (abs(krv) > knee_rel_end_thresh)
+                    )
+                    is_idle = (
+                        (abs(v) < v_end_thresh) and (abs(hv) < hip_end_thresh) and (abs(kv) < knee_end_thresh) and
+                        (abs(hrv) < hip_rel_end_thresh) and (abs(krv) < knee_rel_end_thresh)
+                    )
+                    
+                    if not in_ascent:
+                        if is_active:
+                            in_ascent = True
+                    else:
+                        if is_idle and (bar_y[bottom_idx] - bar_y[i] >= 100):
+                            end_idx = i
+                            break
+                            
+                if end_idx == -1:
+                    end_idx = highest_point_after
+            else:
+                # 中間：不使用 is_idle。找到與下一組之間的最高點，然後「往回推」找剛好觸發 0.2 std 的點 (結束點)
+                next_bottom = bottoms[i_peak + 1]
+                highest_point_after = bottom_idx
+                for i in range(bottom_idx, next_bottom):
+                    if bar_y[i] < bar_y[highest_point_after]:
+                        highest_point_after = i
+                        
+                end_idx = highest_point_after
+                
+                v_ready = (bar_v_y[highest_point_after] >= -v_end_thresh)
+                hv_ready = (hip_v[highest_point_after] <= hip_end_thresh)
+                kv_ready = (knee_v[highest_point_after] <= knee_end_thresh)
+                hrv_ready = (abs(hip_rel_v[highest_point_after]) <= hip_rel_end_thresh)
+                krv_ready = (abs(knee_rel_v[highest_point_after]) <= knee_rel_end_thresh)
+                
+                active_consecutive = 0
+                for i in range(highest_point_after, bottom_idx, -1):
+                    v = bar_v_y[i]
+                    hv = hip_v[i]
+                    kv = knee_v[i]
+                    hrv = hip_rel_v[i]
+                    krv = knee_rel_v[i]
+                    
+                    if v >= -v_end_thresh: v_ready = True
+                    if hv <= hip_end_thresh: hv_ready = True
+                    if kv <= knee_end_thresh: kv_ready = True
+                    if abs(hrv) <= hip_rel_end_thresh: hrv_ready = True
+                    if abs(krv) <= knee_rel_end_thresh: krv_ready = True
+                    
+                    is_active_frame = False
+                    if v_ready and (v < -v_end_thresh): is_active_frame = True
+                    if hv_ready and (hv > hip_end_thresh): is_active_frame = True
+                    if kv_ready and (kv > knee_end_thresh): is_active_frame = True
+                    if hrv_ready and (abs(hrv) > hip_rel_end_thresh): is_active_frame = True
+                    if krv_ready and (abs(krv) > knee_rel_end_thresh): is_active_frame = True
+                    
+                    if is_active_frame:
+                        active_consecutive += 1
+                        if active_consecutive >= 3:
+                            end_cand = i + 2
+                            if (bar_y[bottom_idx] - bar_y[end_cand] >= 100):
+                                end_idx = end_cand
+                                break
+                    else:
+                        active_consecutive = 0
+                        
+            # 確保找到合理的區間且至少有 100 的落差
+            if end_idx > start_idx and (end_idx - start_idx > self.fps // 2):
+                if (bar_y[bottom_idx] - bar_y[start_idx] >= 100) and (bar_y[bottom_idx] - bar_y[end_idx] >= 100):
+                    reps.append({
+                        'start': start_idx,
+                        'bottom': bottom_idx,
+                        'end': end_idx
+                    })
+                
         return reps
 
     def extract_timeseries(self, pose_df, bar_df):
         """
         第三階段：逐幀時序特徵擷取
-        :return: 包含逐幀特徵的 DataFrame，並標註所屬 Rep ID
         """
         pose_clean, bar_clean = self._preprocess(pose_df, bar_df)
-        rep_intervals = self._segment_reps(bar_clean)
+        rep_intervals = self._segment_reps(pose_clean, bar_clean)
         
         all_timeseries = []
         
@@ -241,16 +456,15 @@ class SquatFeatureExtractor:
 
     def fit_transform(self, pose_df, bar_df):
         """
-        主處理流程：Raw Data -> Preprocessing -> Segmentation -> Feature Extraction -> Aggregation
-        :param pose_df: YOLOv26 Pose DataFrame
+        執行完整分析流程 (Pipeline)
+        :param pose_df: YOLOv11 Pose DataFrame
         :param bar_df: YOLOv11 Barbell DataFrame
-        :return: 每一下深蹲一個 Row 的特徵 DataFrame
+        :return: (List[Dict] reps_features, reps_timeseries)
         """
-        # 第一階段：前處理
         pose_clean, bar_clean = self._preprocess(pose_df, bar_df)
-        
-        # 第二階段：動作切割
-        rep_intervals = self._segment_reps(bar_clean)
+
+        # 切割動作
+        rep_intervals = self._segment_reps(pose_clean, bar_clean)
         
         all_rep_features = []
         

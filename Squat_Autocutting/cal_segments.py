@@ -10,7 +10,7 @@ from squat_analysis import SquatFeatureExtractor
 # 請在下方直接貼上您想要處理的資料夾路徑 (支援母資料夾或單一影片資料夾)
 # 前面加上 r 可以防止 Windows 路徑的斜線（\）產生跳脫字元錯誤
 # ==============================================================================
-INPUT_PATH = r"E:\squat\squat_dataset\S067\session01\recording_20260427_143027"
+INPUT_PATH = r"E:\squat_dataset2\be"
 
 # 定義 COCO 關鍵點索引對照表
 KEYPOINT_MAP = {
@@ -247,15 +247,16 @@ def normalize_dataframe(df, exclude_cols=['frame', 'rep_id']):
                 result[col] = 0.0
     return result
 
-def visualize_basic_segmentation(rec_path, df_bar, reps, output_path):
+def visualize_basic_segmentation(rec_path, df_pose, df_bar, reps, output_path):
     """使用 segments.json 與 yolo_coordinates.txt 畫出基本切割情況"""
-    plt.figure(figsize=(12, 6))
-    bar_y = df_bar['bar_y'].values
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+    
+    bar_y = df_bar['bar_y_smoothed'].values if 'bar_y_smoothed' in df_bar.columns else df_bar['bar_y'].values
     frames = df_bar.index
     
     # 畫出槓鈴 Y 軸軌跡 (反轉 Y 軸以符合影像座標)
-    plt.plot(frames, bar_y, label='Barbell Y (Pixels)', color='#3498db', linewidth=2)
-    plt.gca().invert_yaxis()
+    ax1.plot(frames, bar_y, label='Barbell Y (Pixels)', color='#3498db', linewidth=2)
+    ax1.invert_yaxis()
     
     # 標記每一下的區間與最低點
     for r in reps:
@@ -263,17 +264,30 @@ def visualize_basic_segmentation(rec_path, df_bar, reps, output_path):
         bottom = r['bottom']
         end = r['end']
         # 著色區間
-        plt.axvspan(start, end, color='#f1c40f', alpha=0.15)
+        ax1.axvspan(start, end, color='#f1c40f', alpha=0.15)
         # 標記起點、最低點、終點
-        plt.scatter(start, bar_y[start], color='green', marker='o', s=40, label='Start' if r['rep_id'] == 1 else "")
-        plt.scatter(bottom, bar_y[bottom], color='red', marker='v', s=60, label='Bottom' if r['rep_id'] == 1 else "")
-        plt.scatter(end, bar_y[end], color='blue', marker='x', s=40, label='End' if r['rep_id'] == 1 else "")
+        ax1.scatter(start, bar_y[start], color='green', marker='o', s=40, label='Start' if r['rep_id'] == 1 else "")
+        ax1.scatter(bottom, bar_y[bottom], color='red', marker='v', s=60, label='Bottom' if r['rep_id'] == 1 else "")
+        ax1.scatter(end, bar_y[end], color='blue', marker='x', s=40, label='End' if r['rep_id'] == 1 else "")
         
-    plt.title(f"Basic Segmentation Check - {os.path.basename(rec_path)}")
-    plt.xlabel("Frame Index")
-    plt.ylabel("Barbell Y Position")
-    plt.grid(True, alpha=0.2)
-    plt.legend(loc='upper right')
+    ax1.set_title(f"Basic Segmentation Check - {os.path.basename(rec_path)}")
+    ax1.set_ylabel("Barbell Y Position")
+    ax1.grid(True, alpha=0.2)
+    ax1.legend(loc='upper right')
+    
+    if 'hip_angle_smoothed' in df_pose.columns and 'knee_angle_smoothed' in df_pose.columns:
+        hip_angles = df_pose['hip_angle_smoothed'].values
+        knee_angles = df_pose['knee_angle_smoothed'].values
+        ax2.plot(frames, hip_angles, label='Hip Angle', color='red', linewidth=2)
+        ax2.plot(frames, knee_angles, label='Knee Angle', color='green', linewidth=2)
+        for r in reps:
+            ax2.axvspan(r['start'], r['end'], color='#f1c40f', alpha=0.15)
+    
+    ax2.set_xlabel("Frame Index")
+    ax2.set_ylabel("Angle (Degrees)")
+    ax2.grid(True, alpha=0.2)
+    ax2.legend(loc='upper right')
+    
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()
@@ -311,7 +325,8 @@ def main():
             has_skeleton = 'yolo_skeleton.txt' in files or 'mediapipe_landmarks.txt' in files
             has_coords = 'yolo_coordinates.txt' in files
             if has_skeleton and has_coords:
-                recordings_paths.append(os.path.abspath(root))
+                if "棋盤" not in root:
+                    recordings_paths.append(os.path.abspath(root))
     
     current_subject = None
     for rec_path in recordings_paths:
@@ -349,7 +364,7 @@ def main():
             
             # 2. 執行分析
             pose_clean, bar_clean = extractor._preprocess(df_pose, df_bar)
-            reps = extractor._segment_reps(bar_clean)
+            reps = extractor._segment_reps(pose_clean, bar_clean)
             features = extractor.fit_transform(df_pose, df_bar)
             
             # 擷取逐幀特徵 (Timeseries)
@@ -393,7 +408,7 @@ def main():
                 
                 # 4. 生成基本切割視覺化圖表
                 segment_plot_path = os.path.join(rec_path, "segmentation_check.png")
-                visualize_basic_segmentation(rec_path, bar_clean, reps_with_id, segment_plot_path)
+                visualize_basic_segmentation(rec_path, pose_clean, bar_clean, reps_with_id, segment_plot_path)
                 
                 all_segments[rel_key] = reps_with_id
                 print(f"  Found {len(features)} reps. Results saved in {rec_path}")

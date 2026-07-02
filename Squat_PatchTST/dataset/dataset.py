@@ -18,6 +18,10 @@ class Dataset_Benchpress(Dataset):
                 self.features.append(torch.tensor(features).float())
                 self.labels.append(torch.tensor(labels).float())
                 self.subjects.append(subject)
+                print(subject)
+        
+        print('features_shape:', self.features.shape, type(self.features))
+        print('labels_shape:', self.labels.shape, type(self.labels))
         
         self.features = torch.stack(self.features) if self.features else torch.tensor([])
         self.labels = torch.stack(self.labels) if self.labels else torch.tensor([])
@@ -52,7 +56,6 @@ class Dataset_Deadlift(Dataset):
         self.features = torch.stack(self.features) if self.features else torch.tensor([])
         self.labels = torch.stack(self.labels) if self.labels else torch.tensor([])
         self.dim = self.features.shape[-1] if len(self.features) > 0 else 0
-        print(self.dim)
 
     def __len__(self):
         return len(self.features)
