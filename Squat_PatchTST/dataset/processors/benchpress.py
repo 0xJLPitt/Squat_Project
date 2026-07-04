@@ -1,3 +1,30 @@
+"""
+Data Collection and Feature Engineering for Benchpress Dataset:
+
+Base Features (12 dimensions per frame):
+    1. Barbell X-Coordinate (bar_x)
+    2. Barbell Y-Coordinate (bar_y)
+    3. Left Elbow Angle (left_elbow)
+    4. Right Elbow Angle (right_elbow)
+    5. Left Shoulder Angle (left_shoulder)
+    6. Right Shoulder Angle (right_shoulder)
+    7. Left Shoulder Y-Coordinate (left_shoulder_y)
+    8. Right Shoulder Y-Coordinate (right_shoulder_y)
+    9. Left Torso-Arm Angle (left_torso-arm)
+    10. Right Torso-Arm Angle (right_torso-arm)
+    11. Left Wrist to Shoulder Line Distance (left_dist)
+    12. Right Wrist to Shoulder Line Distance (right_dist)
+
+Feature Transformation (4 variations):
+    For each base feature, we calculate 4 variations:
+    1. Motion Velocity (v1) - Delta
+    2. Acceleration (v2) - Delta of velocity
+    3. Variation Ratio (vr) - Velocity divided by previous value
+    4. Z-Score (z) - Standardized value
+
+Total Features per Frame:
+    12 base features * 4 variations = 48 features per frame (scaled to [-1, 1]).
+"""
 import os
 import sys
 # Add project root to sys.path
@@ -184,7 +211,7 @@ def generate_csv(dataset_dir, output_csv):
                                         ]
                                         
                                     
-                        from dataset.tools.Benchpress_tool.predict import extract_raw_features, remove_outliers_and_interpolate, variation_normalize, variation_acceleration_normalize, variation_ratio_normalize, z_score_normalize
+                        from dataset.tools.Benchpress_tool.predict import extract_raw_features, remove_outliers_and_interpolate, variation_normalize, variation_acceleration_normalize, variation_ratio_normalize, z_score_normalize, normalize_to_neg1_1
                         from scipy.interpolate import interp1d
                         
                         # 1. Base 13 metrics matrix
@@ -216,10 +243,10 @@ def generate_csv(dataset_dir, output_csv):
                         norm_48 = np.zeros((100, 48))
                         for c_idx in range(12):
                             col_data = rep_100[:, c_idx]
-                            v1 = variation_normalize(col_data)
-                            v2 = variation_acceleration_normalize(col_data)
-                            vr = variation_ratio_normalize(col_data)
-                            z = z_score_normalize(col_data)
+                            v1 = normalize_to_neg1_1(variation_normalize(col_data))
+                            v2 = normalize_to_neg1_1(variation_acceleration_normalize(col_data))
+                            vr = normalize_to_neg1_1(variation_ratio_normalize(col_data))
+                            z = normalize_to_neg1_1(z_score_normalize(col_data))
                             
                             norm_48[:, c_idx*4 + 0] = v1
                             norm_48[:, c_idx*4 + 1] = v2

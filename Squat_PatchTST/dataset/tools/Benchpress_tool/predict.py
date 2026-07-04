@@ -126,6 +126,15 @@ def z_score_normalize(data):
     scaler = StandardScaler()
     return scaler.fit_transform(data.reshape(-1, 1)).flatten()
 
+def normalize_to_neg1_1(data):
+    """Normalize 1D array to [-1, 1]"""
+    min_val = np.min(data)
+    max_val = np.max(data)
+    scale = max_val - min_val
+    if scale == 0:
+        scale = 1.0
+    return 2.0 * (data - min_val) / scale - 1.0
+
 def remove_outliers_and_interpolate(data):
     """Simple 3-sigma outlier removal and 1D interpolation."""
     if len(data) < 3: return data
@@ -295,10 +304,10 @@ def run_predict(video_path, bar_dict, rear_ske_dict, top_ske_dict, split_info):
         norm_52 = np.zeros((100, 52))
         for c_idx in range(13):
             col_data = rep_100[:, c_idx]
-            v1 = variation_normalize(col_data)
-            v2 = variation_acceleration_normalize(col_data)
-            vr = variation_ratio_normalize(col_data)
-            z = z_score_normalize(col_data)
+            v1 = normalize_to_neg1_1(variation_normalize(col_data))
+            v2 = normalize_to_neg1_1(variation_acceleration_normalize(col_data))
+            vr = normalize_to_neg1_1(variation_ratio_normalize(col_data))
+            z = normalize_to_neg1_1(z_score_normalize(col_data))
             
             # Interleave naturally
             norm_52[:, c_idx*4 + 0] = v1

@@ -1,3 +1,27 @@
+"""
+Data Collection and Feature Engineering for Deadlift Dataset:
+
+Base Features (8 dimensions per frame):
+    1. Left Knee Angle
+    2. Left Hip Angle
+    3. Right Knee Angle
+    4. Right Hip Angle
+    5. Left Arm-Torso Angle
+    6. Right Arm-Torso Angle
+    7. Barbell X-Coordinate
+    8. Barbell Y-Coordinate
+
+Feature Transformation (5 variations):
+    For each base feature, we calculate 5 variations:
+    1. Original Interpolated Value (fn)
+    2. Motion Velocity (fdn) - Delta with initial 0
+    3. Variation Ratio (fd2n) - Velocity divided by previous value
+    4. Z-Score (fzn) - Standardized value
+    5. Acceleration (fdsn) - Delta of velocity
+
+Total Features per Frame:
+    8 base features * 5 variations = 40 features per frame (scaled to [-1, 1]).
+"""
 import os
 import sys
 # Add project root to sys.path
@@ -204,4 +228,6 @@ def generate_csv(dataset_dir, output_csv):
     print(f"Saved {output_csv}")
 
 if __name__ == "__main__":
-    generate_csv("DeadliftDataset_0408", "./data/deadlift_dataset.csv")
+    import os
+    os.makedirs("./data", exist_ok=True)
+    generate_csv(r"E:\DeadliftDataset", "./data/deadlift_dataset.csv")

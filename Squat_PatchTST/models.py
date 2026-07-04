@@ -107,7 +107,7 @@ class PatchEmbedding(nn.Module):
 
 class PatchTSTClassifier(nn.Module):
     def __init__(self, input_dim, num_classes, input_len, patch_len=10, 
-                 embed_dim=256, num_heads=4, num_layers=4, dropout=0.3, stride=1):
+                 embed_dim=256, num_heads=4, num_layers=4, dropout=0.6, stride=1):
         super().__init__()
         
         # 修正點：這裡傳入 1，因為每個通道獨立處理

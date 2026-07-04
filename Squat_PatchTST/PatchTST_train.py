@@ -13,7 +13,7 @@ import argparse
 from PatchTST_test import test_model_with_path_tracking
 import math
 
-def train_model(model, train_loader, valid_loader, criterion, optimizer, scheduler, save_path, fig_path, num_epochs=150, patience=8):
+def train_model(model, train_loader, valid_loader, criterion, optimizer, scheduler, save_path, fig_path, num_epochs=150, patience=40):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     best_f1 = 0.0  # 用來儲存最佳 F1-score
@@ -112,6 +112,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--sport', type=str, choices=['benchpress', 'deadlift'])
     parser.add_argument('--subject_split', type=bool, help='Whether to split the dataset by subject')
+    parser.add_argument('--set_split', type=bool, default=False, help='Whether to split by set for each subject')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of subset workers for DataLoader')
     parser.add_argument('--tag', type=str, help='Tag for save_dir, default is your data argumentation') # spawner, ...
     args = parser.parse_args()
@@ -153,6 +154,60 @@ if __name__ == "__main__":
         test_indices = [idx for idx, s in enumerate(full_dataset.subjects) if s in test_subs]
         
         # We only need one "fold" for a fixed 7:1:2 split
+        dataset_folds = [(train_indices, valid_indices, test_indices)]
+        num_folds = 1
+    elif getattr(args, 'set_split', False):
+        train_indices = []
+        valid_indices = []
+        test_indices = []
+        
+        # Group indices by subject and then by set
+        subject_to_sets = {}
+        for idx, (sub, set_val) in enumerate(zip(full_dataset.subjects, full_dataset.sets)):
+            if sub not in subject_to_sets:
+                subject_to_sets[sub] = {}
+            if set_val not in subject_to_sets[sub]:
+                subject_to_sets[sub][set_val] = []
+            subject_to_sets[sub][set_val].append(idx)
+            
+        remaining_sets = []
+        
+        for sub, sets_dict in subject_to_sets.items():
+            unique_sets = sorted(list(sets_dict.keys()))
+            random.shuffle(unique_sets)
+            
+            # 1. Ensure at least one set per subject goes to Train
+            train_set = unique_sets[0]
+            train_indices.extend(sets_dict[train_set])
+            
+            # Collect remaining sets
+            for s in unique_sets[1:]:
+                remaining_sets.append(sets_dict[s])
+                
+        # Shuffle remaining sets to avoid bias
+        random.shuffle(remaining_sets)
+        
+        # Total dataset size and targets
+        total_data = len(full_dataset)
+        target_train = int(0.7 * total_data)
+        target_val = int(0.1 * total_data)
+        target_test = total_data - target_train - target_val
+        
+        # Allocate remaining sets to balance the 7:1:2 ratio
+        for indices in remaining_sets:
+            def_train = target_train - len(train_indices)
+            def_val = target_val - len(valid_indices)
+            def_test = target_test - len(test_indices)
+            
+            max_def = max(def_train, def_val, def_test)
+            
+            if max_def == def_train:
+                train_indices.extend(indices)
+            elif max_def == def_val:
+                valid_indices.extend(indices)
+            else:
+                test_indices.extend(indices)
+                
         dataset_folds = [(train_indices, valid_indices, test_indices)]
         num_folds = 1
     else:
