@@ -21,3 +21,6 @@ Squat_PatchTST/zipout.py
 Squat_PatchTST/output.zip
 Squat_PatchTST/DeadliftDataset
 Squat_PatchTST/BenchpressDataset
+
+# fitness_action_recognition
+fitness_action_recognition/

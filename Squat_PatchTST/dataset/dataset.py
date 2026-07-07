@@ -89,15 +89,15 @@ class Datasubset(Dataset):
             # clone 避免改到原始 dataset 中的 tensor
             x = x.clone() 
             
-            # 1. Jittering (100% 加入常態分佈雜訊)
-            # 加大干擾強度，標準差改為 0.05
-            noise = torch.randn_like(x) * 0.05
-            x = x + noise
+            # 1. Jittering (50% 加入常態分佈雜訊)
+            if random.random() > 0.5:
+                noise = torch.randn_like(x) * 0.01
+                x = x + noise
                 
-            # 2. Scaling (100% 特徵縮放)
-            # 每個維度乘上 0.90 ~ 1.10 的隨機比例 (加大縮放範圍)
-            scale = torch.empty(x.shape[-1]).uniform_(0.90, 1.10)
-            x = x * scale
+            # 2. Scaling (50% 特徵縮放)
+            if random.random() > 0.5:
+                scale = torch.empty(x.shape[-1]).uniform_(0.98, 1.02)
+                x = x * scale
                 
             # 將數值稍微 clip 避免超出合理的範圍太多
             x = torch.clamp(x, min=-1.5, max=1.5)

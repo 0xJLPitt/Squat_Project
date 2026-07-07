@@ -250,7 +250,7 @@ if __name__ == "__main__":
         model = PatchTSTClassifier(input_dim, num_classes, input_len).to(device)
         optimizer = optim.Adam(model.parameters(), lr=0.0003)
         criterion = torch.nn.BCEWithLogitsLoss()
-        scheduler = get_warmup_cosine_scheduler(optimizer, warmup_epochs=5, max_epochs=100, min_lr_ratio=0.0)
+        scheduler = get_warmup_cosine_scheduler(optimizer, warmup_epochs=5, max_epochs=150, min_lr_ratio=0.0)
 
         save_path = os.path.join(save_dir, f"PatchTST_model_fold{i}.pth")
         txt_dir = os.path.join(save_dir, f"PatchTST_model_fold{i}_results")

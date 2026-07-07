@@ -66,6 +66,22 @@ def apply_augmentation(df):
     # Example: return df + np.random.normal(0, 0.01, df.shape)
     return df
 
+def standardize_features(seq):
+    """
+    Fixed-scale zero-centering to preserve physical amplitude and handle camera shifts.
+    seq: numpy array of shape (N, 8)
+    """
+    import numpy as np
+    out = np.zeros_like(seq, dtype=np.float32)
+    # 0-5 are Angles (Knee, Hip, Torso-arm) -> center at 90, scale by 90
+    out[:, 0:6] = (seq[:, 0:6] - 90.0) / 90.0
+    # 6 is Bar X -> subtract first frame, scale by 320 (half width)
+    out[:, 6] = (seq[:, 6] - seq[0, 6]) / 320.0
+    # 7 is Bar Y -> subtract first frame, scale by 240 (half height)
+    out[:, 7] = (seq[:, 7] - seq[0, 7]) / 240.0
+    # Clip to avoid extreme outliers
+    return np.clip(out, -1.0, 1.0)
+
 def generate_csv(dataset_dir, output_csv):
     import os
     import pandas as pd
@@ -125,7 +141,7 @@ def generate_csv(dataset_dir, output_csv):
                     for file in os.listdir(angle_3d_dir):
                         if file.endswith(".csv"):
                             # Deduplicate based on Subject/Set/File relative path
-                            dedup_id = (subject_dir, set_dir, file)
+                            dedup_id = (label_dir, subject_dir, set_dir, file)
                             if dedup_id in processed_clips:
                                 continue
                             processed_clips.add(dedup_id)
@@ -174,26 +190,36 @@ def generate_csv(dataset_dir, output_csv):
                                 merged_features = np.concatenate([df_3d_filtered.values[:min_len], features_bar_arr[:min_len]], axis=1)
                                 
                                 from dataset.tools.Deadlift_tool.utils import interpolate_features
-                                from dataset.tools.Deadlift_tool.data_split import process_delta, process_delta_ratio, process_zscore, normalize_to_neg1_1
+                                from dataset.tools.Deadlift_tool.data_split import process_delta_ratio
                                 
                                 # Data Augmentation (Placeholder)
                                 merged_features = apply_augmentation(merged_features)
 
-                                filtered_interpolated = {"0": interpolate_features(merged_features, 110)}
-                                delta_feature = process_delta(filtered_interpolated)
-                                delta_square_feature = process_delta(delta_feature)
-                                zscore_feature = process_zscore(filtered_interpolated)
-                                delta_ratio_feature = process_delta_ratio(filtered_interpolated)
+                                interpolated_raw = interpolate_features(merged_features, 110)
                                 
-                                fn = normalize_to_neg1_1(filtered_interpolated["0"]).tolist()
-                                fdn = normalize_to_neg1_1(delta_feature["0"]).tolist()
-                                fd2n = normalize_to_neg1_1(delta_ratio_feature["0"]).tolist()
-                                fzn = normalize_to_neg1_1(zscore_feature["0"]).tolist()
-                                fdsn = normalize_to_neg1_1(delta_square_feature["0"]).tolist()
+                                # 1. Standardize (Zero-Centering & Fixed Scaling)
+                                base_seq = standardize_features(interpolated_raw)
                                 
-                                # Multi-label logic moved to start of block
-                                    
-                                    
+                                # 2. Calculate derivatives on standardized features
+                                # Velocity (diff)
+                                delta = np.vstack([np.zeros(8), np.diff(base_seq, axis=0)])
+                                # Acceleration (diff of diff)
+                                delta2 = np.vstack([np.zeros(8), np.diff(delta, axis=0)])
+                                
+                                # Ratio (using old function on raw values to avoid div by zero near zero-centered values)
+                                filtered_interpolated = {"0": interpolated_raw}
+                                delta_ratio_feature = process_delta_ratio(filtered_interpolated)["0"]
+                                # But we need to clip the ratio to reasonable range
+                                delta_ratio_feature = np.clip(delta_ratio_feature, -1.0, 1.0)
+                                
+                                # 3. Map to fn, fdn, fzn, fdsn, fd2n
+                                fn = base_seq.tolist()
+                                # Multiply velocity and accel by constants to make them network-friendly
+                                fdn = np.clip(delta * 20.0, -1.0, 1.0).tolist()
+                                fdsn = np.clip(delta2 * 400.0, -1.0, 1.0).tolist()
+                                fzn = base_seq.tolist()  # Replace sequence-level Z-score with standardized base
+                                fd2n = delta_ratio_feature.tolist()
+                                
                                 # Combine all 5 normalizations into [110, 40] array
                                 all_feat = np.concatenate([
                                     np.array(fn), 
@@ -204,7 +230,8 @@ def generate_csv(dataset_dir, output_csv):
                                 ], axis=-1)
                                 
                                 import re
-                                set_val = int(re.search(r'\d+', os.path.basename(set_dir)).group())
+                                raw_set_val = int(re.search(r'\d+', os.path.basename(set_dir)).group())
+                                set_val = f"{label_dir}_{raw_set_val}"
                                 clip_val = int(re.search(r'\d+', os.path.basename(file)).group())
                                 
                                 sub_match = re.search(r'subject?\d+', os.path.basename(subject_dir))
@@ -230,4 +257,4 @@ def generate_csv(dataset_dir, output_csv):
 if __name__ == "__main__":
     import os
     os.makedirs("./data", exist_ok=True)
-    generate_csv(r"E:\DeadliftDataset", "./data/deadlift_dataset.csv")
+    generate_csv(r"E:\DeadliftDataset_0408", "./data/deadlift_dataset.csv")
