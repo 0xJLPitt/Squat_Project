@@ -57,7 +57,7 @@ def load_bar_data(filepath, n_frames):
     
     full_index = range(1, n_frames + 1)
     df = df.reindex(full_index)
-    df = df.interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
+    df = df.interpolate(method='linear').bfill().ffill()
     
     return df.reset_index(drop=True)
 
@@ -403,7 +403,7 @@ def main():
                     json.dump(reps_with_id, f, indent=4)
                 
                 # 4. 生成基本切割視覺化圖表
-                segment_plot_path = os.path.join(rec_path, "segmentation_check.png")
+                segment_plot_path = os.path.join(rec_path, "segmentation_check_v2.png")
                 visualize_basic_segmentation(rec_path, pose_clean, bar_clean, reps_with_id, segment_plot_path)
                 
                 all_segments[rel_key] = reps_with_id

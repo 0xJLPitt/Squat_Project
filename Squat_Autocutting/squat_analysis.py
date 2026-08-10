@@ -169,6 +169,16 @@ class SquatFeatureExtractor:
         hip_rel_v = np.gradient(hip_rel_x_smooth.values) * self.fps
         knee_rel_v = np.gradient(knee_rel_x_smooth.values) * self.fps
         
+        # 計算腳踝的二維移動速度 (像素/秒) 與平滑 (含 Hampel 濾波器)
+        ankle_dx = np.gradient(pose_df['ankle_x'].values) * self.fps
+        ankle_dy = np.gradient(pose_df['ankle_y'].values) * self.fps
+        ankle_v = np.sqrt(ankle_dx**2 + ankle_dy**2)
+        ankle_v_smooth = apply_rolling_smoothing(apply_hampel_filter(pd.Series(ankle_v))).bfill().ffill().values
+
+        # 計算槓鈴水平速度與平滑 (含 Hampel 濾波器)
+        bar_v_x = np.gradient(bar_df['bar_x'].values) * self.fps
+        bar_v_x_smooth = apply_rolling_smoothing(apply_hampel_filter(pd.Series(bar_v_x))).bfill().ffill().values
+        
         reps = []
         n_frames = len(bar_y)
         
@@ -204,45 +214,66 @@ class SquatFeatureExtractor:
             # --- 2. 尋找起始點 ---
             start_idx = -1
             if is_first:
-                # 第一下：往回推找 is_idle (因為前面沒有其他波谷，必須仰賴靜止來排除預備碎步)
+                # 第一下：從波谷逆向往左尋找下蹲前的第一個局部最高點 (波峰 highest_point_before)
+                search_back_limit = max(0, bottom_idx - 150)
                 highest_point_before = bottom_idx
-                in_descent = False
-                for i in range(bottom_idx, 0, -1):
-                    if bar_y[i] < bar_y[highest_point_before]:
+                for i in range(bottom_idx - 1, search_back_limit, -1):
+                    if bar_y[i] <= bar_y[highest_point_before]:
                         highest_point_before = i
+                    else:
+                        # 一旦往左走過頂 (Y 軸向上增加代表高度下降)，說明已跨過局部頂峰進入準備期，立即停止
+                        if (bar_y[i] - bar_y[highest_point_before]) > 5:
+                            break
                         
+                start_idx = highest_point_before
+                
+                # 從下蹲前最高點開始正向往後找連續 3 幀滿足啟動條件的點
+                v_ready = (bar_v_y[highest_point_before] <= v_start_thresh)
+                hv_ready = (hip_v[highest_point_before] >= -hip_start_thresh)
+                kv_ready = (knee_v[highest_point_before] >= -knee_start_thresh)
+                hrv_ready = (abs(hip_rel_v[highest_point_before]) <= hip_rel_start_thresh)
+                krv_ready = (abs(knee_rel_v[highest_point_before]) <= knee_rel_start_thresh)
+                
+                active_consecutive = 0
+                for i in range(highest_point_before, bottom_idx):
                     v = bar_v_y[i]
                     hv = hip_v[i]
                     kv = knee_v[i]
                     hrv = hip_rel_v[i]
                     krv = knee_rel_v[i]
                     
-                    is_active = (
-                        (v > v_start_thresh) or (hv < -hip_start_thresh) or (kv < -knee_start_thresh) or
-                        (abs(hrv) > hip_rel_start_thresh) or (abs(krv) > knee_rel_start_thresh)
-                    )
-                    is_idle = (
-                        (abs(v) < v_start_thresh) and (abs(hv) < hip_start_thresh) and (abs(kv) < knee_start_thresh) and
-                        (abs(hrv) < hip_rel_start_thresh) and (abs(krv) < knee_rel_start_thresh)
-                    )
+                    if v <= v_start_thresh: v_ready = True
+                    if hv >= -hip_start_thresh: hv_ready = True
+                    if kv >= -knee_start_thresh: kv_ready = True
+                    if abs(hrv) <= hip_rel_start_thresh: hrv_ready = True
+                    if abs(krv) <= knee_rel_start_thresh: krv_ready = True
                     
-                    if not in_descent:
-                        if is_active:
-                            in_descent = True
+                    is_active_frame = False
+                    if v_ready and (v > v_start_thresh): is_active_frame = True
+                    if hv_ready and (hv < -hip_start_thresh): is_active_frame = True
+                    if kv_ready and (kv < -knee_start_thresh): is_active_frame = True
+                    if hrv_ready and (abs(hrv) > hip_rel_start_thresh): is_active_frame = True
+                    if krv_ready and (abs(krv) > knee_rel_start_thresh): is_active_frame = True
+                    
+                    if is_active_frame:
+                        active_consecutive += 1
+                        if active_consecutive >= 3:
+                            start_cand = i - 2
+                            if (bar_y[bottom_idx] - bar_y[start_cand] >= 100):
+                                start_idx = start_cand
+                                break
                     else:
-                        if is_idle and (bar_y[bottom_idx] - bar_y[i] >= 100):
-                            start_idx = i
-                            break
-                            
-                if start_idx == -1:
-                    start_idx = highest_point_before
+                        active_consecutive = 0
             else:
-                # 中間：不使用 is_idle。先找到與上一組之間的最高點，然後「往後推」找第一個滿足 0.2 std 的點 (啟動點)
+                # 中間：先找到與上一組之間的局部最高點，然後「往後推」找啟動點
                 prev_bottom = bottoms[i_peak - 1]
                 highest_point_before = bottom_idx
-                for i in range(bottom_idx, prev_bottom, -1):
-                    if bar_y[i] < bar_y[highest_point_before]:
+                for i in range(bottom_idx - 1, prev_bottom, -1):
+                    if bar_y[i] <= bar_y[highest_point_before]:
                         highest_point_before = i
+                    else:
+                        if (bar_y[i] - bar_y[highest_point_before]) > 5:
+                            break
                         
                 start_idx = highest_point_before
                 
@@ -305,7 +336,8 @@ class SquatFeatureExtractor:
                     )
                     is_idle = (
                         (abs(v) < v_end_thresh) and (abs(hv) < hip_end_thresh) and (abs(kv) < knee_end_thresh) and
-                        (abs(hrv) < hip_rel_end_thresh) and (abs(krv) < knee_rel_end_thresh)
+                        (abs(hrv) < hip_rel_end_thresh) and (abs(krv) < knee_rel_end_thresh) and
+                        (ankle_v_smooth[i] < 5.0) and (abs(bar_v_x_smooth[i]) < 5.0)  # 確保收槓移動前就切斷
                     )
                     
                     if not in_ascent:
