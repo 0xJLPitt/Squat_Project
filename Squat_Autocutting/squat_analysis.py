@@ -203,8 +203,22 @@ class SquatFeatureExtractor:
         knee_rel_end_thresh = max(np.std(knee_rel_v) * 0.5, 3.0)
         
         # 1. 尋找所有深蹲的波谷 (bar_y 的波峰，因為 y 向下為正)
-        # prominence=100 確保起槓或收槓時的小碎步被忽略
-        bottoms, _ = find_peaks(bar_y, prominence=100)
+        # prominence=25 確保經過訊號平滑後的快節奏淺蹲波谷 (Shallow Squat) 能被精準捕捉
+        bottoms_cand, _ = find_peaks(bar_y, prominence=25)
+        
+        # 過濾真正的深蹲波谷：排除小碎步與出槓沉降浮動 (膝角 < 155° 且 髖角 < 155°，或是大位移落差之淺蹲)
+        bottoms = []
+        for b in bottoms_cand:
+            knee_a = knee_angles_val[b]
+            hip_a = hip_angles_val[b]
+            drop_b = bar_y[b] - bar_y[max(0, b - 30)]
+            
+            # 真正的深蹲波谷條件：
+            # 1. 膝關節與髖關節皆有真實下蹲屈曲 (knee < 155° 且 hip < 155°)，精準排除 160° 踩碎步與出槓沉降
+            # 2. 或是大位移落差之淺蹲 (knee < 158° 且 drop_b > 60px)
+            is_valid_bottom = (knee_a < 155.0 and hip_a < 155.0) or (knee_a < 158.0 and drop_b > 60.0)
+            if is_valid_bottom:
+                bottoms.append(b)
         
         reps = []
         for i_peak, bottom_idx in enumerate(bottoms):
@@ -212,107 +226,31 @@ class SquatFeatureExtractor:
             is_last = (i_peak == len(bottoms) - 1)
             
             # --- 2. 尋找起始點 ---
-            start_idx = -1
-            if is_first:
-                # 第一下：從波谷逆向往左尋找下蹲前的第一個局部最高點 (波峰 highest_point_before)
-                search_back_limit = max(0, bottom_idx - 150)
-                highest_point_before = bottom_idx
-                for i in range(bottom_idx - 1, search_back_limit, -1):
-                    if bar_y[i] <= bar_y[highest_point_before]:
-                        highest_point_before = i
-                    else:
-                        # 一旦往左走過頂 (Y 軸向上增加代表高度下降)，說明已跨過局部頂峰進入準備期，立即停止
-                        if (bar_y[i] - bar_y[highest_point_before]) > 5:
-                            break
-                        
-                start_idx = highest_point_before
-                
-                # 從下蹲前最高點開始正向往後找連續 3 幀滿足啟動條件的點
-                v_ready = (bar_v_y[highest_point_before] <= v_start_thresh)
-                hv_ready = (hip_v[highest_point_before] >= -hip_start_thresh)
-                kv_ready = (knee_v[highest_point_before] >= -knee_start_thresh)
-                hrv_ready = (abs(hip_rel_v[highest_point_before]) <= hip_rel_start_thresh)
-                krv_ready = (abs(knee_rel_v[highest_point_before]) <= knee_rel_start_thresh)
-                
-                active_consecutive = 0
-                for i in range(highest_point_before, bottom_idx):
-                    v = bar_v_y[i]
-                    hv = hip_v[i]
-                    kv = knee_v[i]
-                    hrv = hip_rel_v[i]
-                    krv = knee_rel_v[i]
-                    
-                    if v <= v_start_thresh: v_ready = True
-                    if hv >= -hip_start_thresh: hv_ready = True
-                    if kv >= -knee_start_thresh: kv_ready = True
-                    if abs(hrv) <= hip_rel_start_thresh: hrv_ready = True
-                    if abs(krv) <= knee_rel_start_thresh: krv_ready = True
-                    
-                    is_active_frame = False
-                    if v_ready and (v > v_start_thresh): is_active_frame = True
-                    if hv_ready and (hv < -hip_start_thresh): is_active_frame = True
-                    if kv_ready and (kv < -knee_start_thresh): is_active_frame = True
-                    if hrv_ready and (abs(hrv) > hip_rel_start_thresh): is_active_frame = True
-                    if krv_ready and (abs(krv) > knee_rel_start_thresh): is_active_frame = True
-                    
-                    if is_active_frame:
-                        active_consecutive += 1
-                        if active_consecutive >= 3:
-                            start_cand = i - 2
-                            if (bar_y[bottom_idx] - bar_y[start_cand] >= 100):
-                                start_idx = start_cand
-                                break
-                    else:
-                        active_consecutive = 0
+            search_start = max(0, bottom_idx - 150) if is_first else bottoms[i_peak - 1]
+            if bottom_idx > search_start:
+                highest_point_before = search_start + int(np.argmin(bar_y[search_start:bottom_idx]))
             else:
-                # 中間：先找到與上一組之間的局部最高點，然後「往後推」找啟動點
-                prev_bottom = bottoms[i_peak - 1]
                 highest_point_before = bottom_idx
-                for i in range(bottom_idx - 1, prev_bottom, -1):
-                    if bar_y[i] <= bar_y[highest_point_before]:
-                        highest_point_before = i
-                    else:
-                        if (bar_y[i] - bar_y[highest_point_before]) > 5:
-                            break
-                        
-                start_idx = highest_point_before
                 
-                v_ready = (bar_v_y[highest_point_before] <= v_start_thresh)
-                hv_ready = (hip_v[highest_point_before] >= -hip_start_thresh)
-                kv_ready = (knee_v[highest_point_before] >= -knee_start_thresh)
-                hrv_ready = (abs(hip_rel_v[highest_point_before]) <= hip_rel_start_thresh)
-                krv_ready = (abs(knee_rel_v[highest_point_before]) <= knee_rel_start_thresh)
+            # 站立基準角度與槓鈴高度 (最高點)
+            standing_knee = knee_angles_val[highest_point_before]
+            standing_hip = hip_angles_val[highest_point_before]
+            standing_bar_y = bar_y[highest_point_before]
+            
+            # 從波谷逆向往左追蹤至關節真正開始屈曲的發動點
+            # 關節屈曲 (膝角 < standing_knee - 5.0 且 < 166°，或 髖角 < standing_hip - 5.0 且 < 163°) 為必要條件
+            # 徹底排除第一下前段站立閒置 (雙腿打直 ~178°) 被槓鈴微幅浮動誤拉長的問題
+            start_idx = highest_point_before
+            for i in range(bottom_idx - 1, highest_point_before, -1):
+                has_knee_flexion = (knee_angles_val[i] < min(standing_knee - 5.0, 166.0))
+                has_hip_flexion = (hip_angles_val[i] < min(standing_hip - 5.0, 163.0))
                 
-                active_consecutive = 0
-                for i in range(highest_point_before, bottom_idx):
-                    v = bar_v_y[i]
-                    hv = hip_v[i]
-                    kv = knee_v[i]
-                    hrv = hip_rel_v[i]
-                    krv = knee_rel_v[i]
-                    
-                    if v <= v_start_thresh: v_ready = True
-                    if hv >= -hip_start_thresh: hv_ready = True
-                    if kv >= -knee_start_thresh: kv_ready = True
-                    if abs(hrv) <= hip_rel_start_thresh: hrv_ready = True
-                    if abs(krv) <= knee_rel_start_thresh: krv_ready = True
-                    
-                    is_active_frame = False
-                    if v_ready and (v > v_start_thresh): is_active_frame = True
-                    if hv_ready and (hv < -hip_start_thresh): is_active_frame = True
-                    if kv_ready and (kv < -knee_start_thresh): is_active_frame = True
-                    if hrv_ready and (abs(hrv) > hip_rel_start_thresh): is_active_frame = True
-                    if krv_ready and (abs(krv) > knee_rel_start_thresh): is_active_frame = True
-                    
-                    if is_active_frame:
-                        active_consecutive += 1
-                        if active_consecutive >= 3:
-                            start_cand = i - 2
-                            if (bar_y[bottom_idx] - bar_y[start_cand] >= 100):
-                                start_idx = start_cand
-                                break
-                    else:
-                        active_consecutive = 0
+                is_flexed = has_knee_flexion or has_hip_flexion
+                if is_flexed:
+                    start_idx = i
+                else:
+                    start_idx = i
+                    break
                         
             # --- 3. 尋找結束點 ---
             end_idx = -1
@@ -336,15 +274,15 @@ class SquatFeatureExtractor:
                     )
                     is_idle = (
                         (abs(v) < v_end_thresh) and (abs(hv) < hip_end_thresh) and (abs(kv) < knee_end_thresh) and
-                        (abs(hrv) < hip_rel_end_thresh) and (abs(krv) < knee_rel_end_thresh) and
-                        (ankle_v_smooth[i] < 5.0) and (abs(bar_v_x_smooth[i]) < 5.0)  # 確保收槓移動前就切斷
+                        (abs(hrv) < hip_rel_end_thresh) and (abs(krv) < knee_rel_end_thresh) 
+                        
                     )
                     
                     if not in_ascent:
                         if is_active:
                             in_ascent = True
                     else:
-                        if is_idle and (bar_y[bottom_idx] - bar_y[i] >= 100):
+                        if is_idle and (bar_y[bottom_idx] - bar_y[i] >= 30):
                             end_idx = i
                             break
                             
@@ -391,15 +329,16 @@ class SquatFeatureExtractor:
                         active_consecutive += 1
                         if active_consecutive >= 3:
                             end_cand = i + 2
-                            if (bar_y[bottom_idx] - bar_y[end_cand] >= 100):
+                            if (bar_y[bottom_idx] - bar_y[end_cand] >= 30):
                                 end_idx = end_cand
                                 break
                     else:
                         active_consecutive = 0
                         
-            # 確保找到合理的區間且至少有 100 的落差
+            # 確保找到合理的區間且相對最高點至少有 30 的落差
             if end_idx > start_idx and (end_idx - start_idx > self.fps // 2):
-                if (bar_y[bottom_idx] - bar_y[start_idx] >= 100) and (bar_y[bottom_idx] - bar_y[end_idx] >= 100):
+                drop_from_top = bar_y[bottom_idx] - bar_y[highest_point_before]
+                if drop_from_top >= 30:
                     reps.append({
                         'start': start_idx,
                         'bottom': bottom_idx,
