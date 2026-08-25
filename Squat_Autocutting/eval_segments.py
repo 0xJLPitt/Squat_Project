@@ -191,6 +191,7 @@ def evaluate_segmentation(gt_full, gt_rec, pred_full, pred_rec, fps=30):
         "recording_20260521_140622",  # S94
         "recording_20260601_104441",  # S103
         "recording_20260611_153424",  # S108
+        "recording_20260611_153127",  # S108
     ]
 
     # 過濾排除指定之錄影

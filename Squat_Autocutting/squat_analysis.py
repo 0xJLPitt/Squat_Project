@@ -182,11 +182,6 @@ class SquatFeatureExtractor:
         reps = []
         n_frames = len(bar_y)
         
-        # 狀態機變數 (已捨棄，但保留變數)
-        state = 0 
-        start_idx = 0
-        bottom_idx = 0
-        
         from scipy.signal import find_peaks
 
         # 動態閾值 (加入最低雜訊門檻，避免某些訊號標準差太小導致微小雜訊被判定為活躍)
@@ -201,12 +196,12 @@ class SquatFeatureExtractor:
         knee_end_thresh = max(np.std(knee_v) * 0.5, 3.0)
         hip_rel_end_thresh = max(np.std(hip_rel_v) * 0.5, 3.0)
         knee_rel_end_thresh = max(np.std(knee_rel_v) * 0.5, 3.0)
-        
+
         # 1. 尋找所有深蹲的波谷 (bar_y 的波峰，因為 y 向下為正)
-        # prominence=25 確保經過訊號平滑後的快節奏淺蹲波谷 (Shallow Squat) 能被精準捕捉
-        bottoms_cand, _ = find_peaks(bar_y, prominence=25)
+        # prominence=15, distance=30 確保二次彈跳 (W型波谷) 與快節奏淺蹲皆能被精準捕捉，且不重複採樣
+        bottoms_cand, _ = find_peaks(bar_y, prominence=15, distance=30)
         
-        # 過濾真正的深蹲波谷：排除小碎步與出槓沉降浮動 (膝角 < 155° 且 髖角 < 155°，或是大位移落差之淺蹲)
+        # 過濾真正的深蹲波谷：排除小碎步與出槓沉降浮動
         bottoms = []
         for b in bottoms_cand:
             knee_a = knee_angles_val[b]
@@ -214,9 +209,9 @@ class SquatFeatureExtractor:
             drop_b = bar_y[b] - bar_y[max(0, b - 30)]
             
             # 真正的深蹲波谷條件：
-            # 1. 膝關節與髖關節皆有真實下蹲屈曲 (knee < 155° 且 hip < 155°)，精準排除 160° 踩碎步與出槓沉降
-            # 2. 或是大位移落差之淺蹲 (knee < 158° 且 drop_b > 60px)
-            is_valid_bottom = (knee_a < 155.0 and hip_a < 155.0) or (knee_a < 158.0 and drop_b > 60.0)
+            # 1. 膝關節與髖關節皆有實質下蹲屈曲 (knee < 148° 且 hip < 152°)
+            # 2. 或是淺蹲/下蹲不足但有顯著槓鈴下沉位移 (knee < 162° 且 hip < 162° 且 drop_b > 45px)
+            is_valid_bottom = (knee_a < 148.0 and hip_a < 152.0) or (knee_a < 162.0 and hip_a < 162.0 and drop_b > 45.0)
             if is_valid_bottom:
                 bottoms.append(b)
         
@@ -225,32 +220,99 @@ class SquatFeatureExtractor:
             is_first = (i_peak == 0)
             is_last = (i_peak == len(bottoms) - 1)
             
-            # --- 2. 尋找起始點 ---
-            search_start = max(0, bottom_idx - 150) if is_first else bottoms[i_peak - 1]
-            if bottom_idx > search_start:
-                highest_point_before = search_start + int(np.argmin(bar_y[search_start:bottom_idx]))
-            else:
+            # --- 2. 尋找起始點 (依使用者指定之三段式架構) ---
+            bottom_knee_angle = knee_angles_val[bottom_idx]
+            is_normal_depth = (bottom_knee_angle < 135.0)
+
+            if is_first:
+                # 【第 1 個波】：以 Y 軸波谷往回搜尋到第一個波峰為主，關節角度輔助確定準備要蹲的起始點
+                # 1. 主幹：從波谷向左回溯尋找緊鄰的第一個局部最高波峰 (避開更早前的出槓動作)
+                search_limit = max(0, bottom_idx - 90)
                 highest_point_before = bottom_idx
+                for i in range(bottom_idx - 1, search_limit, -1):
+                    if bar_y[i] <= bar_y[highest_point_before]:
+                        highest_point_before = i
+                    else:
+                        if i < bottom_idx - 10 and all(bar_y[k] > bar_y[highest_point_before] for k in range(max(0, i - 2), i + 1)):
+                            break
+                            
+                standing_knee = knee_angles_val[highest_point_before]
+                standing_hip = hip_angles_val[highest_point_before]
+                standing_bar_y = bar_y[highest_point_before]
                 
-            # 站立基準角度與槓鈴高度 (最高點)
-            standing_knee = knee_angles_val[highest_point_before]
-            standing_hip = hip_angles_val[highest_point_before]
-            standing_bar_y = bar_y[highest_point_before]
-            
-            # 從波谷逆向往左追蹤至關節真正開始屈曲的發動點
-            # 關節屈曲 (膝角 < standing_knee - 5.0 且 < 166°，或 髖角 < standing_hip - 5.0 且 < 163°) 為必要條件
-            # 徹底排除第一下前段站立閒置 (雙腿打直 ~178°) 被槓鈴微幅浮動誤拉長的問題
-            start_idx = highest_point_before
-            for i in range(bottom_idx - 1, highest_point_before, -1):
-                has_knee_flexion = (knee_angles_val[i] < min(standing_knee - 5.0, 166.0))
-                has_hip_flexion = (hip_angles_val[i] < min(standing_hip - 5.0, 163.0))
+                # 2. 輔助：以關節角度確認是否在準備要蹲的起始發動點 (膝/髖關節解鎖屈曲)
+                start_idx = highest_point_before
+                for i in range(bottom_idx - 1, highest_point_before, -1):
+                    has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.5)
+                    has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.5)
+                    has_bar_descent = (bar_y[i] > standing_bar_y + 8.0)
+                    
+                    if has_knee_flexion or has_hip_flexion or has_bar_descent:
+                        start_idx = i
+                    else:
+                        start_idx = i
+                        break
+            else:
+                # 【其他波 (非第 1 下)】：依下蹲深度分兩情況
+                search_start = bottoms[i_peak - 1]
+                search_limit = max(search_start, bottom_idx - 150)
                 
-                is_flexed = has_knee_flexion or has_hip_flexion
-                if is_flexed:
-                    start_idx = i
+                if is_normal_depth:
+                    # 【情況 A：關節角度大 / 正常深蹲 (波谷膝角 < 135°)】
+                    # 1. 主幹：以關節角度 (膝/髖關節) 回到打直站立姿態作為起始點判斷
+                    # 2. 輔助：以 Y 軸當輔助，確認落在兩下之間的第一個波峰最高處
+                    highest_bar_peak = search_start + int(np.argmin(bar_y[search_start:bottom_idx]))
+                    highest_point_before = highest_bar_peak
+                    
+                    for i in range(bottom_idx - 1, search_limit, -1):
+                        if knee_angles_val[i] >= 165.0 or hip_angles_val[i] >= 161.0:
+                            highest_point_before = i
+                            if i <= highest_bar_peak + 5:
+                                break
+                                
+                    standing_knee = knee_angles_val[highest_point_before]
+                    standing_hip = hip_angles_val[highest_point_before]
+                    standing_bar_y = bar_y[highest_point_before]
+                    
+                    start_idx = highest_point_before
+                    for i in range(bottom_idx - 1, highest_point_before, -1):
+                        has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.5)
+                        has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.5)
+                        has_bar_descent = (bar_y[i] > standing_bar_y + 8.0)
+                        
+                        if has_knee_flexion or has_hip_flexion or has_bar_descent:
+                            start_idx = i
+                        else:
+                            start_idx = i
+                            break
                 else:
-                    start_idx = i
-                    break
+                    # 【情況 B：關節角度小 / 淺蹲 / 下蹲不足 (波谷膝角 >= 135°)】
+                    # 1. 主幹：以 Y 軸從波谷往回搜尋到第一個波峰
+                    highest_point_before = bottom_idx
+                    for i in range(bottom_idx - 1, search_limit, -1):
+                        if bar_y[i] <= bar_y[highest_point_before]:
+                            highest_point_before = i
+                        else:
+                            real_drop = bar_y[bottom_idx] - bar_y[highest_point_before]
+                            if real_drop >= 15 and i < bottom_idx - 10 and all(bar_y[k] > bar_y[highest_point_before] for k in range(max(0, i - 2), i + 1)):
+                                break
+                                
+                    standing_knee = knee_angles_val[highest_point_before]
+                    standing_hip = hip_angles_val[highest_point_before]
+                    standing_bar_y = bar_y[highest_point_before]
+                    
+                    # 2. 輔助：以關節角度當輔助看是否在準備要蹲的起始點
+                    start_idx = highest_point_before
+                    for i in range(bottom_idx - 1, highest_point_before, -1):
+                        has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.0)
+                        has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.0)
+                        has_bar_descent = (bar_y[i] > standing_bar_y + 5.0)
+                        
+                        if has_knee_flexion or has_hip_flexion or has_bar_descent:
+                            start_idx = i
+                        else:
+                            start_idx = i
+                            break
                         
             # --- 3. 尋找結束點 ---
             end_idx = -1
@@ -336,8 +398,8 @@ class SquatFeatureExtractor:
                         active_consecutive = 0
                         
             # 確保找到合理的區間且相對最高點至少有 30 的落差
+            drop_from_top = bar_y[bottom_idx] - bar_y[highest_point_before]
             if end_idx > start_idx and (end_idx - start_idx > self.fps // 2):
-                drop_from_top = bar_y[bottom_idx] - bar_y[highest_point_before]
                 if drop_from_top >= 30:
                     reps.append({
                         'start': start_idx,
