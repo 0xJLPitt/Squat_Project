@@ -225,29 +225,54 @@ class SquatFeatureExtractor:
             is_normal_depth = (bottom_knee_angle < 135.0)
 
             if is_first:
-                # 【第 1 個波】：以 Y 軸波谷往回搜尋到第一個波峰為主，關節角度輔助確定準備要蹲的起始點
-                # 1. 主幹：從波谷向左回溯尋找緊鄰的第一個局部最高波峰 (避開更早前的出槓動作)
+                # 【第 1 個波】：
+                # 主要判定：以 Y 軸槓鈴往回尋找斜率開始顯著向下 (下蹲開始) 的前一個平穩區間終點，且切線斜率達到 -45 度
+                # 輔助判定：利用膝關節和髖關節角度當作輔助判定
                 search_limit = max(0, bottom_idx - 90)
-                highest_point_before = bottom_idx
+                
+                # 從波谷往回尋找波峰：收集前兩個候選波峰，若第二個波峰比第一個高很多，以第二個為主
+                first_peak = bottom_idx
+                second_peak = None
+                in_valley = True  # 剛開始從波谷往上爬
                 for i in range(bottom_idx - 1, search_limit, -1):
-                    if bar_y[i] <= bar_y[highest_point_before]:
-                        highest_point_before = i
+                    if bar_y[i] <= bar_y[first_peak]:
+                        first_peak = i
+                        in_valley = True
                     else:
-                        if i < bottom_idx - 10 and all(bar_y[k] > bar_y[highest_point_before] for k in range(max(0, i - 2), i + 1)):
+                        if in_valley and i < bottom_idx - 10 and all(bar_y[k] > bar_y[first_peak] for k in range(max(0, i - 2), i + 1)):
+                            # 找到第一個局部波峰 (局部最低點後的第一次上升)
+                            # 繼續往左看有沒有更高的第二個波峰
+                            second_peak = first_peak  # 暫存第一個候選波峰
+                            in_valley = False
+                            # 繼續搜尋，看是否有更高的波峰
+                            for j in range(i, search_limit, -1):
+                                if bar_y[j] <= bar_y[second_peak]:
+                                    second_peak = j
                             break
-                            
+                
+                # 若第二個波峰存在，且比第一個波峰高出 >= 80px (視覺上明顯更高)，以第二個波峰為主
+                if second_peak is not None and bar_y[second_peak] < bar_y[first_peak] - 80:
+                    highest_point_before = second_peak
+                else:
+                    highest_point_before = first_peak
+                    
                 standing_knee = knee_angles_val[highest_point_before]
                 standing_hip = hip_angles_val[highest_point_before]
                 standing_bar_y = bar_y[highest_point_before]
                 
-                # 2. 輔助：以關節角度確認是否在準備要蹲的起始發動點 (膝/髖關節解鎖屈曲)
+                # 從波谷向左回溯鎖定起始發動點：
+                # 1. 主要判定：Y 軸槓鈴斜率達到 -45 度 (離開平穩區間，開始顯著向下下沉)
+                # 2. 輔助判定：膝關節與髖關節角度開始解鎖屈曲
                 start_idx = highest_point_before
                 for i in range(bottom_idx - 1, highest_point_before, -1):
+                    # 主要判定：Y 軸槓鈴切線斜率達到約 -45 度 (每幀下沉 >= 1.0px 或向下速度 >= 25 px/s)
+                    is_slope_45_deg = (bar_v_y[i] >= 25.0) or (bar_y[i] - bar_y[max(0, i - 2)] >= 2.0)
+                    
+                    # 輔助判定：膝/髖關節角度開始解鎖屈曲
                     has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.5)
                     has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.5)
-                    has_bar_descent = (bar_y[i] > standing_bar_y + 8.0)
                     
-                    if has_knee_flexion or has_hip_flexion or has_bar_descent:
+                    if is_slope_45_deg or has_knee_flexion or has_hip_flexion:
                         start_idx = i
                     else:
                         start_idx = i
@@ -278,9 +303,9 @@ class SquatFeatureExtractor:
                     for i in range(bottom_idx - 1, highest_point_before, -1):
                         has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.5)
                         has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.5)
-                        has_bar_descent = (bar_y[i] > standing_bar_y + 8.0)
+                        is_slope_45_deg = (bar_v_y[i] >= 25.0) or (bar_y[i] - bar_y[max(0, i - 2)] >= 2.0)
                         
-                        if has_knee_flexion or has_hip_flexion or has_bar_descent:
+                        if has_knee_flexion or has_hip_flexion or is_slope_45_deg:
                             start_idx = i
                         else:
                             start_idx = i
