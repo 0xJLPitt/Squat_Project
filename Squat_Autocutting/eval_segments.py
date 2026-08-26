@@ -192,6 +192,7 @@ def evaluate_segmentation(gt_full, gt_rec, pred_full, pred_rec, fps=30):
         "recording_20260601_104441",  # S103
         "recording_20260611_153424",  # S108
         "recording_20260611_153127",  # S108
+        "recording_20260511_133807",  # S084
     ]
 
     # 過濾排除指定之錄影
@@ -245,9 +246,13 @@ def evaluate_segmentation(gt_full, gt_rec, pred_full, pred_rec, fps=30):
                 'end_diff_sec': end_diff / fps,
             })
             
+        rep_count_diff = abs(len(gt_reps_list) - len(pred_reps_list))
         if start_diffs and end_diffs:
             recording_summaries.append({
                 'recording': display_name,
+                'gt_rep_count': len(gt_reps_list),
+                'pred_rep_count': len(pred_reps_list),
+                'rep_count_diff': rep_count_diff,
                 'num_reps_evaluated': len(start_diffs),
                 'mean_start_diff_abs': np.mean(start_diffs),
                 'mean_start_diff_sec': np.mean(start_diffs) / fps,
@@ -345,6 +350,19 @@ def main():
     print(f"Start Frame 誤差標準差 (Std Dev): {df_details['start_diff_abs'].std():.2f} 幀")
     print(f"End Frame 10-Rep 平均誤差 (MAE):   {df_details['end_diff_abs'].mean():.2f} 幀 ({df_details['end_diff_sec'].mean():.3f} 秒)")
     print(f"End Frame 誤差標準差 (Std Dev):   {df_details['end_diff_abs'].std():.2f} 幀")
+
+    # 下數準確率統計
+    print("\n" + "=" * 70)
+    print(" 下數計算準確率 (Rep Count Accuracy)")
+    print("=" * 70)
+    exact_match = (df_summary['rep_count_diff'] == 0).sum()
+    total_recs = len(df_summary)
+    mismatch_df = df_summary[df_summary['rep_count_diff'] != 0][['recording', 'gt_rep_count', 'pred_rep_count', 'rep_count_diff']]
+    print(f"下數完全正確的錄影數: {exact_match} / {total_recs}  ({exact_match / total_recs * 100:.1f}%)")
+    print(f"平均下數差異: {df_summary['rep_count_diff'].mean():.3f} 下")
+    if not mismatch_df.empty:
+        print(f"\n以下 {len(mismatch_df)} 筆錄影下數不一致:")
+        print(mismatch_df.to_string(index=False))
 
     print("\n[Rep 1 ~ Rep 10 逐次平均誤差 (Per Rep Average)]:")
     rep_table = df_details.groupby('rep_id')[['start_diff_abs', 'end_diff_abs']].mean().reset_index()

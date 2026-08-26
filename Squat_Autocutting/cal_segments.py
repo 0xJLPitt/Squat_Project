@@ -508,6 +508,7 @@ def main():
         "recording_20260601_104441",  # S103
         "recording_20260611_153424",  # S108
         "recording_20260611_153127",  # S108
+        "recording_20260511_133807",  # S084
     ]
 
     current_subject = None
