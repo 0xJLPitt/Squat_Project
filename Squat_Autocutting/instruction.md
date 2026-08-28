@@ -31,6 +31,17 @@
   - 將所有擷取下來的區間無縫拼接成一支流暢的精華影片 `RD_seg.mp4`，去除了受試者休息或走動的垃圾時間。
 - **注意**：此檔案同樣不包含寫死路徑，且會自動跳過「棋盤」資料夾。
 
+### 4. `eval_by_error_type.py` (依動作/錯誤類別獨立評估切片演算法誤差)
+- **用途**：讀取 `S83_S108.json` 標註中的動作類別（`正常`、`下蹲深度不足`、`骨盆後傾`、`髖部上升過快(起身時髖部先啟動)`、`下蹲時髖部主導`、`下蹲時膝蓋主導`），分別獨立計算每個動作的切片誤差與總下數。
+- **功能**：
+  - 統計各動作類別的「影片錄影數量」與「實際評估深蹲總下數」。
+  - 計算各動作類別的 Start Frame 平均相差 (MAE)、End Frame 平均相差 (MAE)、秒數誤差與標準差。
+  - 自動匯出彙整報表 `eval_error_types_summary.csv`、逐下明細 `eval_error_types_details.csv` 以及視覺化長條圖 `eval_error_types_comparison.png`。
+- **執行方式**：
+  ```powershell
+  mamba run -n hw1 python eval_by_error_type.py
+  ```
+
 ---
 
 ## 🚀 總控台：`autocutting.py` 的使用觀念
@@ -67,3 +78,4 @@ mamba run -n hw1 python autocutting.py --input "E:\squat_dataset2\be\S92\session
 ### 💡 備註：如何開啟/關閉拼接功能
 目前在 `autocutting.py` 原始碼中，步驟二（執行 `stitch_segments.py`）被使用多行註解 `"""` 隱藏起來了。這代表現在執行總控台時，**只會產出圖表與 JSON，不會剪輯影片**。
 當你確認 `segmentation_check.png` 上的切點都完美無誤，隨時可以將程式碼中的 `"""` 刪除，就能恢復一鍵計算 + 剪輯拼接的完整全自動化流水線！
+
