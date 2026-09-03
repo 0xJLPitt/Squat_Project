@@ -1,4 +1,4 @@
-"""
+r"""
 Batch Video Processing Pipeline: YOLO 2D Pose -> H36M Keypoints -> MotionAGFormer 3D Pose
 支援：
 1. YOLO 2D 骨架辨識與 COCO 格式儲存 (yolo_skeleton.txt)
@@ -24,6 +24,11 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+# Ensure current directory and tools are in sys.path
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
 # Add MotionAGFormer to sys.path
 MOTION_AGFORMER_PATH = r"D:\Pitt\Project\tools\MotionAGFormer"
 if MOTION_AGFORMER_PATH not in sys.path:
@@ -36,9 +41,12 @@ except ImportError as e:
     print(f"[Warning] Failed to import MotionAGFormer modules directly: {e}")
 
 try:
-    from overlay_2d import overlay_2d
+    from tools.overlay_2d import overlay_2d
 except ImportError:
-    overlay_2d = None
+    try:
+        from overlay_2d import overlay_2d
+    except ImportError:
+        overlay_2d = None
 
 
 # ==============================================================================
