@@ -280,14 +280,34 @@ def run_comparison(target_dir, ckpt_path=None):
     N = min(len(k3d), len(df_bar))
     frames = np.arange(1, N + 1)
 
-    # World Gravity Alignment
-    standing_f = segments[0]['start'] - 1 if segments else 0
-    # H36M Joints: 3 (R_Ankle), 6 (L_Ankle), 11 (L_Shoulder), 14 (R_Shoulder)
-    ankle_mid = (k3d[standing_f, 3] + k3d[standing_f, 6]) / 2.0
-    sh_mid = (k3d[standing_f, 11] + k3d[standing_f, 14]) / 2.0
-    upright_vec = sh_mid - ankle_mid
+    # Option A: Kinematic Self-Calibration using Squat Descent Principal Axis
+    # Compute average descent vector across all repetitions (from standing start to bottom)
+    # H36M Joints: 13 (L_Wrist), 16 (R_Wrist)
+    wrist_mid_raw = (k3d[:N, 13, :] + k3d[:N, 16, :]) / 2.0
 
-    v_from = upright_vec / np.linalg.norm(upright_vec)
+    if segments:
+        drop_vecs = []
+        for seg in segments:
+            st = seg['start'] - 1
+            bot = seg['bottom'] - 1
+            vec = wrist_mid_raw[st] - wrist_mid_raw[bot]
+            norm_v = np.linalg.norm(vec)
+            if norm_v > 1e-4:
+                drop_vecs.append(vec / norm_v)
+        if drop_vecs:
+            v_from = np.mean(drop_vecs, axis=0)
+            v_from /= np.linalg.norm(v_from)
+        else:
+            v_from = np.array([0.0, 0.0, 1.0])
+    else:
+        # Fallback to PCA if segments not available
+        pts_centered = wrist_mid_raw - np.mean(wrist_mid_raw, axis=0)
+        cov = np.cov(pts_centered, rowvar=False)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        v_from = eigvecs[:, np.argmax(eigvals)]
+        if v_from[2] < 0:
+            v_from = -v_from
+
     v_to = np.array([0.0, 0.0, 1.0])
     v_cross = np.cross(v_from, v_to)
     s = np.linalg.norm(v_cross)
@@ -304,7 +324,7 @@ def run_comparison(target_dir, ckpt_path=None):
         R_align = np.eye(3) if c > 0 else -np.eye(3)
 
     pitch_deg = np.degrees(np.arccos(np.clip(c, -1.0, 1.0)))
-    print(f"-> Camera pitch alignment angle: {pitch_deg:.2f}° (Gravity aligned to +Z)")
+    print(f"-> Option A Kinematic Self-Calibration: Descent axis tilt angle = {pitch_deg:.2f}° (Gravity aligned to +Z)")
 
     k3d_world = np.zeros_like(k3d)
     for f_idx in range(len(k3d)):

@@ -188,16 +188,27 @@ def run_calibrated_comparison(
         with open(seg_file, "r") as f:
             segments = json.load(f)
 
-    # 3. Extract Wrist Midpoint & Load YOLO Barbell with Gravity Alignment
-    print("[Step 3/5] Extracting 3D wrist midpoint with World Gravity Alignment...")
-    # Gravity / World-coordinate alignment:
-    # Compute camera pitch angle from standing posture (ankle to shoulder upright vector)
-    standing_f = segments[0]['start'] - 1 if segments else 0
-    ankle_mid = (kpts_3d[standing_f, 15] + kpts_3d[standing_f, 16]) / 2.0
-    sh_mid = (kpts_3d[standing_f, 5] + kpts_3d[standing_f, 6]) / 2.0
-    upright_vec = sh_mid - ankle_mid
-    theta = np.arctan2(upright_vec[2], -upright_vec[1])
-    print(f"-> Camera pitch alignment angle: {np.degrees(theta):.2f}°")
+    # 3. Extract Wrist Midpoint & Load YOLO Barbell with Option A Kinematic Alignment
+    print("[Step 3/5] Extracting 3D wrist midpoint with Option A Kinematic Self-Calibration...")
+    # Option A: Compute descent vector from standing to bottom across reps
+    raw_wrist_mid = (kpts_3d[:, 9, :] + kpts_3d[:, 10, :]) / 2.0
+    if segments:
+        drop_vecs = []
+        for seg in segments:
+            st = seg['start'] - 1
+            bot = seg['bottom'] - 1
+            vec = raw_wrist_mid[st] - raw_wrist_mid[bot]
+            norm_v = np.linalg.norm(vec)
+            if norm_v > 1e-4:
+                drop_vecs.append(vec / norm_v)
+        v_from = np.mean(drop_vecs, axis=0) if drop_vecs else np.array([0.0, -1.0, 0.0])
+        v_from /= np.linalg.norm(v_from)
+    else:
+        v_from = np.array([0.0, -1.0, 0.0])
+
+    # In camera coordinates, descent along Y-axis is downward, so upward vector has negative Y
+    theta = np.arctan2(v_from[2], -v_from[1])
+    print(f"-> Option A Kinematic Self-Calibration: Descent axis pitch angle = {np.degrees(theta):.2f}° (Gravity aligned to -Y)")
 
     R_pitch = np.array([
         [1.0, 0.0, 0.0],

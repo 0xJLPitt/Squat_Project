@@ -45,20 +45,28 @@ $$P_{\text{wrist\_mid}}(t) = \frac{P_{\text{L\_Wrist}}(t) + P_{\text{R\_Wrist}}(
           \|
 ```
 
-### 2. 數學演算法：Rodrigues 向量重力旋轉對齊
-為消除相機俯角造成的座標耦合，模組在計算運動學指標前會自動執行**世界重力軸校正**：
+### 2. 演算法演進：由「骨骼直立連線」升級至「方案 A：運動學自校正（深蹲下潛主軸）」
 
-1. **提取人體站立直立向量（Upright Vector）**：
-   在深蹲開始前的站立起始幀（Standing Frame），提取雙腳踝中點與雙肩膀中點：
-   $$\vec{v}_{\text{ankle}} = \frac{P_{\text{L\_Ankle}} + P_{\text{R\_Ankle}}}{2},\quad \vec{v}_{\text{shoulder}} = \frac{P_{\text{L\_Shoulder}} + P_{\text{R\_Shoulder}}}{2}$$
-   $$\vec{v}_{\text{upright}} = \vec{v}_{\text{shoulder}} - \vec{v}_{\text{ankle}}$$
-2. **計算對齊旋轉矩陣（Rodrigues' Rotation Formula）**：
-   定義單位起始向量 $\hat{u} = \frac{\vec{v}_{\text{upright}}}{\|\vec{v}_{\text{upright}}\|}$ 與目標世界重力垂直單位向量 $\hat{g} = [0, 0, 1]^T$。
-   計算旋轉軸 $\vec{v} = \hat{u} \times \hat{g}$ 與餘弦值 $c = \hat{u} \cdot \hat{g}$，建構反對稱矩陣 $[v]_\times$：
-   $$R_{\text{gravity}} = I + [v]_\times + [v]_\times^2 \left(\frac{1 - c}{\|\vec{v}\|^2}\right)$$
-3. **旋轉轉換至世界重力座標系**：
-   $$P_{\text{world}}(t) = R_{\text{gravity}} \cdot P_{\text{cam}}(t)$$
-   經由世界重力對齊後，垂直位移（$Z_{\text{world}}$）與矢狀前後位移（$X_{\text{world}}$）完全正交解耦，手腕軌跡與槓鈴軌跡即呈現筆直純垂直重疊！
+#### (1) 為什麼廢棄「肩膀 $\to$ 腳踝連線」直立假設？
+在人體生物力學中，背槓站立準備時：
+* **足中重心平衡（Mid-foot COM）**：背負槓鈴站立時，為平衡合重心，髖關節微屈，軀幹通常呈現約 $5^\circ \sim 15^\circ$ 的自然前傾角（Torso Incline Angle）。
+* **解剖關節非共線**：腳踝關節位於足掌後側，若將「雙腳踝中點 $\to$ 雙肩膀中點」強行扳直為 $90^\circ$ 垂直，會**誤將人體生理前傾當成相機俯角進行補償**，反而引入人為系統性偏差（Over-correction）。
+
+#### (2) 方案 A 運動學自校正（Kinematic Self-Calibration using Squat Descent Principal Axis）
+深蹲下潛（Eccentric）與蹬伸（Concentric）的過程受地心引力約束最嚴格，因此**運動軌跡的主位移方向即為最客觀的物理重力垂線**：
+
+1. **提取每次深蹲的下潛位移向量（Descent Vectors）**：
+   對於影片中的 $K$ 次深蹲，提取每一下從「站立最高點 $t_{\text{start}}$」至「蹲底最低點 $t_{\text{bottom}}$」的 3D 手腕位移：
+   $$\vec{d}_k = P_{\text{wrist}}(t_{\text{start}}^{(k)}) - P_{\text{wrist}}(t_{\text{bottom}}^{(k)})$$
+2. **計算平均下潛直立單位向量（Mean Descent Upright Vector）**：
+   $$\hat{v}_{\text{descent}} = \frac{\sum_{k=1}^K \frac{\vec{d}_k}{\|\vec{d}_k\|}}{\left\| \sum_{k=1}^K \frac{\vec{d}_k}{\|\vec{d}_k\|} \right\|}$$
+   *(若缺乏分段標記，則自適應退化為對活躍區間進行 PCA 主成分分析，取第一主成分軸 PC1)*。
+3. **Rodrigues 向量重力對齊矩陣**：
+   定義目標世界垂直軸 $\hat{g} = [0, 0, 1]^T$（或相機座標系 $[0, -1, 0]^T$），計算旋轉軸 $\vec{v} = \hat{v}_{\text{descent}} \times \hat{g}$ 與夾角餘弦 $c = \hat{v}_{\text{descent}} \cdot \hat{g}$：
+   $$R_{\text{align}} = I + [v]_\times + [v]_\times^2 \left( \frac{1 - c}{\|\vec{v}\|^2} \right)$$
+4. **座標旋轉至世界重力系**：
+   $$P_{\text{world}}(t) = R_{\text{align}} \cdot P_{\text{cam}}(t)$$
+   經由方案 A 自校正後，垂直下潛（$Z_{\text{world}}$）與前後晃動（$X_{\text{world}}$）完全正交解耦，且**完全免疫於受試者背槓站立時的前傾姿勢**！
 
 ---
 
