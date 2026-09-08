@@ -3,7 +3,8 @@ import os
 import re
 import numpy as np
 import pandas as pd
-
+#讀取 Ground Truth JSON，萃取並列印出所有出現過的深蹲錯誤型態標籤
+#用於確認標註中存在哪些動作分類。
 gt_path = r"C:\squat\squat_dataset2_0706\S83_S108.json"
 dataset_dir = r"C:\squat\squat_dataset2_0706"
 pred_json_path = os.path.join(dataset_dir, "segments.json")

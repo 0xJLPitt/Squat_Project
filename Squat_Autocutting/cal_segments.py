@@ -2,6 +2,8 @@ import os
 import pandas as pd
 import numpy as np
 import argparse
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import json
 from squat_analysis import SquatFeatureExtractor
@@ -394,65 +396,89 @@ def load_gt_records(gt_json_path):
 def visualize_basic_segmentation(rec_path, df_pose, df_bar, reps, output_path, gt_reps=None):
     """使用 GT (S83_S108.json) 與 yolo_coordinates.txt 畫出基本切割情況"""
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
-    
-    bar_y = df_bar['bar_y_smoothed'].values if 'bar_y_smoothed' in df_bar.columns else df_bar['bar_y'].values
-    frames = df_bar.index
-    
-    # 畫出槓鈴 Y 軸軌跡 (反轉 Y 軸以符合影像座標)
-    ax1.plot(frames, bar_y, label='Barbell Y (Pixels)', color='#3498db', linewidth=2)
-    ax1.invert_yaxis()
-    
-    # 畫出黃色螢光區間 (優先使用 Ground Truth S83_S108)
-    spans_to_draw = []
-    if gt_reps:
-        for item in gt_reps:
-            s_f, e_f = parse_rep_frames(item)
-            if s_f is not None and e_f is not None:
-                spans_to_draw.append((s_f, e_f))
-        span_label = "GT Segment (S83_S108)"
-    else:
-        for r in reps:
-            spans_to_draw.append((r['start'], r['end']))
-        span_label = "Predicted Segment"
-
-    for idx, (start, end) in enumerate(spans_to_draw):
-        ax1.axvspan(start, end, color='#f1c40f', alpha=0.25, label=span_label if idx == 0 else "")
-
-    # 標記每一下預測的起點、最低點、終點
-    for r in reps:
-        start = r['start']
-        bottom = r['bottom']
-        end = r['end']
-        if start < len(bar_y):
-            ax1.scatter(start, bar_y[start], color='green', marker='o', s=40, label='Start' if r['rep_id'] == 1 else "")
-        if bottom < len(bar_y):
-            ax1.scatter(bottom, bar_y[bottom], color='red', marker='v', s=60, label='Bottom' if r['rep_id'] == 1 else "")
-        if end < len(bar_y):
-            ax1.scatter(end, bar_y[end], color='blue', marker='x', s=40, label='End' if r['rep_id'] == 1 else "")
+    try:
+        bar_y = df_bar['bar_y_smoothed'].values if 'bar_y_smoothed' in df_bar.columns else df_bar['bar_y'].values
+        frames = df_bar.index
         
-    ax1.set_title(f"Basic Segmentation Check - {os.path.basename(rec_path)}")
-    ax1.set_ylabel("Barbell Y Position")
-    ax1.grid(True, alpha=0.2)
-    ax1.legend(loc='upper right')
-    
-    if 'hip_angle_smoothed' in df_pose.columns and 'knee_angle_smoothed' in df_pose.columns:
-        hip_angles = df_pose['hip_angle_smoothed'].values
-        knee_angles = df_pose['knee_angle_smoothed'].values
-        if np.max(hip_angles) > 1.0 or np.max(knee_angles) > 1.0:
-            ax2.plot(frames, hip_angles, label='Hip Angle', color='red', linewidth=2)
-            ax2.plot(frames, knee_angles, label='Knee Angle', color='green', linewidth=2)
-            for idx, (start, end) in enumerate(spans_to_draw):
-                ax2.axvspan(start, end, color='#f1c40f', alpha=0.25, label=span_label if idx == 0 else "")
-            ax2.set_ylim(0, 185)
-    
-    ax2.set_xlabel("Frame Index")
-    ax2.set_ylabel("Angle (Degrees)")
-    ax2.grid(True, alpha=0.2)
-    ax2.legend(loc='upper right')
-    
-    plt.tight_layout()
-    plt.savefig(output_path)
-    plt.close()
+        # 畫出槓鈴 Y 軸軌跡 (反轉 Y 軸以符合影像座標)
+        ax1.plot(frames, bar_y, label='Barbell Y (Pixels)', color='#3498db', linewidth=2)
+        ax1.invert_yaxis()
+        
+        # 畫出黃色螢光區間 (優先使用 Ground Truth S83_S108)
+        spans_to_draw = []
+        if gt_reps:
+            for item in gt_reps:
+                s_f, e_f = parse_rep_frames(item)
+                if s_f is not None and e_f is not None:
+                    spans_to_draw.append((s_f, e_f))
+            span_label = "GT Segment (S83_S108)"
+        else:
+            for r in reps:
+                spans_to_draw.append((r['start'], r['end']))
+            span_label = "Predicted Segment"
+
+        for idx, (start, end) in enumerate(spans_to_draw):
+            ax1.axvspan(start, end, color='#f1c40f', alpha=0.25, label=span_label if idx == 0 else "")
+
+        # 標記每一下預測的起點、最低點、終點
+        for r in reps:
+            start = r['start']
+            bottom = r['bottom']
+            end = r['end']
+            if start < len(bar_y):
+                ax1.scatter(start, bar_y[start], color='green', marker='o', s=40, label='Start' if r['rep_id'] == 1 else "")
+            if bottom < len(bar_y):
+                ax1.scatter(bottom, bar_y[bottom], color='red', marker='v', s=60, label='Bottom' if r['rep_id'] == 1 else "")
+            if end < len(bar_y):
+                ax1.scatter(end, bar_y[end], color='blue', marker='x', s=40, label='End' if r['rep_id'] == 1 else "")
+            
+        ax1.set_title(f"Basic Segmentation Check - {os.path.basename(rec_path)}")
+        ax1.set_ylabel("Barbell Y Position")
+        ax1.grid(True, alpha=0.2)
+        ax1.legend(loc='upper right')
+        
+        if 'hip_angle_smoothed' in df_pose.columns and 'knee_angle_smoothed' in df_pose.columns:
+            hip_angles = df_pose['hip_angle_smoothed'].values
+            knee_angles = df_pose['knee_angle_smoothed'].values
+            if np.max(hip_angles) > 1.0 or np.max(knee_angles) > 1.0:
+                ax2.plot(frames, hip_angles, label='Hip Angle', color='red', linewidth=2)
+                ax2.plot(frames, knee_angles, label='Knee Angle', color='green', linewidth=2)
+                for idx, (start, end) in enumerate(spans_to_draw):
+                    ax2.axvspan(start, end, color='#f1c40f', alpha=0.25, label=span_label if idx == 0 else "")
+                ax2.set_ylim(0, 185)
+        
+        ax2.set_xlabel("Frame Index")
+        ax2.set_ylabel("Angle (Degrees)")
+        ax2.grid(True, alpha=0.2)
+        ax2.legend(loc='upper right')
+        
+        plt.tight_layout()
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        try:
+            fig.savefig(output_path, dpi=150)
+        except Exception as save_err:
+            # 若檔案被外部檢視器開啟/鎖定，嘗試先刪除再寫入，或儲存為備用檔名
+            try:
+                import time
+                time.sleep(0.1)
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+                fig.savefig(output_path, dpi=150)
+            except Exception:
+                alt_path = output_path.replace(".png", "_latest.png")
+                try:
+                    fig.savefig(alt_path, dpi=150)
+                    print(f"  [Info] 原圖片被外部程式鎖定，已另存為: {os.path.basename(alt_path)}")
+                except Exception as final_err:
+                    print(f"  [Warning] Failed to save plot to {output_path}: {final_err}")
+    except Exception as e:
+        print(f"  [Warning] Failed in visualization: {e}")
+    finally:
+        plt.close(fig)
+        plt.close('all')
 
 def main():
     parser = argparse.ArgumentParser(description="Squat Feature Extraction & Visualization")
@@ -598,8 +624,11 @@ def main():
                 full_k, rec_name = extract_recording_id(rel_key)
                 rec_gt_reps = gt_full_dict.get(full_k) or gt_rec_dict.get(rec_name) or []
                 
-                segment_plot_path = os.path.join(rec_path, "segmentation_check_v2.png")
-                visualize_basic_segmentation(rec_path, pose_clean, bar_clean, reps_with_id, segment_plot_path, gt_reps=rec_gt_reps)
+                try:
+                    segment_plot_path = os.path.join(rec_path, "segmentation_check_v2.png")
+                    visualize_basic_segmentation(rec_path, pose_clean, bar_clean, reps_with_id, segment_plot_path, gt_reps=rec_gt_reps)
+                except Exception as viz_err:
+                    print(f"  [Warning] Visualization plot skipped due to: {viz_err}")
                 
                 all_segments[rel_key] = reps_with_id
                 print(f"  Found {len(features)} reps (GT reps: {len(rec_gt_reps)}). Results saved in {rec_path}")

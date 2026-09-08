@@ -7,7 +7,7 @@ import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-
+#用來計算深蹲切割演算法整體效能評估
 def extract_recording_id(path_str):
     """從路徑字串中提取識別碼"""
     cleaned = str(path_str).replace('\\', '/').strip('/')
@@ -280,7 +280,7 @@ def plot_single_chart_all_recordings(df_summary, output_fig_path):
     
     # 根據錄影筆數動態決定圖表寬度，確保所有 218 個錄影都很清晰
     fig_width = max(24, int(num_recs * 0.25))
-    plt.figure(figsize=(fig_width, 10), dpi=300)
+    plt.figure(figsize=(fig_width, 10), dpi=150)
     plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
     
     x = np.arange(num_recs)
@@ -310,10 +310,21 @@ def plot_single_chart_all_recordings(df_summary, output_fig_path):
     plt.grid(True, linestyle=':', alpha=0.6)
     plt.tight_layout()
     
-    plt.savefig(output_fig_path)
-    plt.close()
-    print(f"\n[SUCCESS] 已為您產出涵蓋 S83~S108 所有 {num_recs} 個錄影的獨立平均相差圖表:")
-    print(f"👉 {output_fig_path}")
+    try:
+        plt.savefig(output_fig_path)
+        print(f"\n[SUCCESS] 已為您產出涵蓋 S83~S108 所有 {num_recs} 個錄影的獨立平均相差圖表:")
+        print(f"👉 {output_fig_path}")
+    except (OSError, PermissionError) as e:
+        print(f"\n[WARNING] 無法寫入至 {output_fig_path} ({e})")
+        print("💡 原因：該圖檔目前可能正被 Windows 相片檢視器、圖檔預覽器或其他軟體開啟中，導致檔案被鎖定無法覆寫。")
+        fallback_path = output_fig_path.replace(".png", "_new.png")
+        try:
+            plt.savefig(fallback_path)
+            print(f"👉 已為您自動儲存至備用檔名: {fallback_path}")
+        except Exception as ex:
+            print(f"[ERROR] 儲存備用圖片時亦發生錯誤: {ex}")
+    finally:
+        plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description="Squat Segmentation Evaluation Tool")

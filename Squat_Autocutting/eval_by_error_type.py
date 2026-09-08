@@ -6,8 +6,12 @@ import re
 import argparse
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-
+#將資料依照 6 大深蹲動作分類
+# （正常、下蹲深度不足、骨盆後傾、髖部上升過快、下蹲時髖部主導、下蹲時膝蓋主導），
+# 分別統計各類別下的深蹲次數、起訖點平均相差幀數與標準差，產出比較圖表
 def extract_recording_id(path_str):
     """從路徑字串中提取識別碼"""
     cleaned = str(path_str).replace('\\', '/').strip('/')
@@ -431,9 +435,19 @@ def plot_error_comparison_chart(df_summary, output_fig_path):
     plt.grid(True, linestyle=':', alpha=0.6)
     plt.tight_layout()
 
-    plt.savefig(output_fig_path)
-    plt.close()
-    print(f"\n[SUCCESS] 已產出各動作類別誤差與下數比較圖表: {output_fig_path}")
+    try:
+        plt.savefig(output_fig_path)
+        print(f"\n[SUCCESS] 已產出各動作類別誤差與下數比較圖表: {output_fig_path}")
+    except (OSError, PermissionError) as e:
+        print(f"\n[WARNING] 原圖檔被檢視器鎖定無法覆寫 ({e})")
+        fallback_path = output_fig_path.replace(".png", "_latest.png")
+        try:
+            plt.savefig(fallback_path)
+            print(f"👉 已自動為您儲存至最新備用檔名: {fallback_path}")
+        except Exception as ex:
+            print(f"[ERROR] 儲存備用圖片時亦發生錯誤: {ex}")
+    finally:
+        plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description="分動作類別評估深蹲切片演算法誤差與下數統計")
