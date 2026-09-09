@@ -1,18 +1,72 @@
 """
-檔案目的: 執行自動外參校正，透過棋盤格找出各攝影機 (vision2~5 或 RR/RLU/FL/FR) 之間的相對 3D 位置與旋轉角度。
-注意: 程式內已包含 vision3 與 vision4 相機對接時的 180 度翻轉修復機制。請確認目標資料夾的棋盤格圖片是否清晰。
-呼叫指令: python step3_extrinsics.py
+檔案目的: 執行雙相機外參自動校正 (Stereo Extrinsic Calibration) - 深蹲實驗室版本 (Studio Squat)
+透過棋盤格找出各攝影機 (vision2~5 或 RR/RLU/FL/FR) 之間的相對 3D 位置與旋轉角度。
+
+特點與機制:
+  1. 相機配置: vision2 (RR), vision3 (RLU), vision4 (FL), vision5 (FR)。
+  2. 鏈式配對: (vision2, vision3), (vision3, vision4), (vision4, vision5)。
+  3. 對向視角反轉: 程式內已包含 vision3 (後方) 與 vision4 (前方) 相機對接時的 180 度翻轉修復機制 (corners2[::-1])。
+  4. 同步支援單一資料夾或母資料夾批次掃描處理。
+  5. 支援 calibration_visualizer 左右同步角點視覺化圖輸出。
+
+呼叫指令:
+  python step3.2_extrinsics_studio_squat.py
+或在 mamba 環境執行:
+  mamba run -n hw1 python step3.2_extrinsics_studio_squat.py
 """
-import cv2
-import numpy as np
+
 import os
 import glob
+import cv2
+import numpy as np
 
-def calibrate_extrinsics(dir1, dir2, mtx1, dist1, mtx2, dist2, id1, id2, pattern_size=(8, 5), square_size=25.0):
+
+# ==============================================================================
+# 【對向相機 180 度點序反轉設定】 (Opposite Camera Configuration)
+# ==============================================================================
+# 當相機為對向拍攝時，OpenCV 偵測點序在空間中相差 180 度 (點 1 <-> 點 15)。
+# 您可以在此自由設定對向相機，或指定特定相機配對中誰需要進行 180 度點序反轉：
+#
+# 【設定 A】對向相機清單 (凡是此清單中的相機，在對接時預設執行 180 度反轉):
+# 實驗室深蹲拍攝配置中，前方相機 (vision4 / FL) 與後方相機 (vision3 / RLU) 對向:
+OPPOSITE_CAMERAS = ["vision4", "FL"]
+
+# 【設定 B】特定相機配對反轉規則 (Pair-Specific Rules):
+# 格式: (相機1, 相機2): "需要反轉的相機名稱" (若都不反轉則設為 None)
+PAIR_FLIP_RULES = {
+    # 深蹲實驗室配置 (Squat Studio):
+    ("vision2", "vision3"): None,      # RR 與 RLU 皆在後方，同側不反轉
+    ("vision3", "vision4"): "vision4",  # RLU (後方) 與 FL (前方) 對接時，FL 反轉 180 度
+    ("vision4", "vision5"): None,      # FL 與 FR 皆在前方，同側不反轉
+    ("RR", "RLU"): None,
+    ("RLU", "FL"): "FL",
+    ("FL", "FR"): None,
+    # 臥推 iPhone 配置 (相容設定):
+    ("i15", "i17"): "i17",
+    ("i16", "i17"): "i17",
+    ("i15", "i16"): None,
+}
+
+def should_flip_camera(cam_name, partner_name=None):
+    """判斷給定相機在當前配對中是否需要 180 度反轉"""
+    if not cam_name:
+        return False
+    if partner_name:
+        pair = (cam_name, partner_name)
+        pair_inv = (partner_name, cam_name)
+        if pair in PAIR_FLIP_RULES:
+            return PAIR_FLIP_RULES[pair] == cam_name
+        elif pair_inv in PAIR_FLIP_RULES:
+            return PAIR_FLIP_RULES[pair_inv] == cam_name
+    return cam_name in OPPOSITE_CAMERAS
+# ==============================================================================
+
+
+def calibrate_extrinsics(dir1, dir2, mtx1, dist1, mtx2, dist2, id1, id2, pattern_size=(5, 3), square_size=25.0):
     """
     計算雙相機外參 (Stereo Calibration)
-    :param id1: 例如 "vision2"
-    :param id2: 例如 "vision3"
+    :param id1: 例如 "vision2" 或 "RR"
+    :param id2: 例如 "vision3" 或 "RLU"
     """
     objp = np.zeros((pattern_size[0] * pattern_size[1], 3), np.float32)
     objp[:, :2] = np.mgrid[0:pattern_size[0], 0:pattern_size[1]].T.reshape(-1, 2)
@@ -56,15 +110,11 @@ def calibrate_extrinsics(dir1, dir2, mtx1, dist1, mtx2, dist2, id1, id2, pattern
             print(f"[OK] 發現同步偵測幀: {f1}")
             obj_points.append(objp)
             
-            # SB 演算法本身已經包含亞像素精確度，不需要額外跑 cornerSubPix
-            
-            # 關鍵修復：如果是 vision3 (後方) 匹配 vision4 (前方)，棋盤格的物理方向在 OpenCV 偵測時被旋轉了 180 度！
-            # 必須把 vision4 (corners2) 完全反轉 (180度)，才能對應到真實世界的同一個物理角點。
-            if (id1 == "RLU" and id2 == "FL") or (id1 == "vision3" and id2 == "vision4"):
-                # corners2 shape is (15, 1, 2)
-                # 反轉整個陣列，等同於旋轉 180 度 (點 1 變成點 15，點 2 變成點 14...)
-                corners2 = corners2[::-1, :, :]
-                
+            # 依據對向相機設定進行 180 度點序翻轉以確保左右鏡頭物理點序 100% 一致
+            if should_flip_camera(id1, id2):
+                corners1 = corners1[::-1, :, :].copy()
+            if should_flip_camera(id2, id1):
+                corners2 = corners2[::-1, :, :].copy()
                 
             img_points1.append(corners1)
             img_points2.append(corners2)
@@ -76,7 +126,7 @@ def calibrate_extrinsics(dir1, dir2, mtx1, dist1, mtx2, dist2, id1, id2, pattern
                 vis_dir = os.path.join(os.path.dirname(dir1), "calibration_visualized")
                 save_stereo_visualization(img1, img2, corners1, corners2, id1, id2, f1, vis_dir, pattern_size=pattern_size, is_manual=False)
             except Exception as vis_err:
-                print(f"[WARN] 儲存標記視覺化影像失敗: {vis_err}")
+                pass
 
     if common_count < 3:
         print(f"[FAIL] {id1} 與 {id2} 同步成功的照片太少 ({common_count} 張)，無法計算外參。")
@@ -92,9 +142,10 @@ def calibrate_extrinsics(dir1, dir2, mtx1, dist1, mtx2, dist2, id1, id2, pattern
     )
 
     if ret:
-        print(f"[DONE] {id1} -> {id2} 外參計算成功！")
-        return {"R": R, "T": T}
+        print(f"[DONE] {id1} -> {id2} 外參計算成功！立體 RMS 誤差: {ret:.4f} px")
+        return {"R": R, "T": T, "rms": ret}
     return None
+
 
 if __name__ == "__main__":
     # ================= 設定路徑 =================

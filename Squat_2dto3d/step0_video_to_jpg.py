@@ -6,15 +6,26 @@
 import cv2
 import os
 import glob
+import sys
+import argparse
 from pathlib import Path
 
-def extract_frames(video_path, output_root=None, frame_interval=10):
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+def extract_frames(video_path, output_root=None, frame_interval=None, target_fps=None, overwrite=False):
     """
     將單個影片轉換為圖片幀。
     
     :param video_path: 影片檔案路徑
     :param output_root: 儲存圖片的根目錄。如果為 None，則在影片同目錄下建立資料夾。
-    :param frame_interval: 每隔幾幀擷取一張。
+    :param frame_interval: 每隔幾幀擷取一張 (若未指定且有提供 target_fps，則根據影片 FPS 自動計算)。
+    :param target_fps: 每秒擷取張數 (例如 5 代表每秒抽 5 張)。
+    :param overwrite: 是否覆蓋已存在的圖片。
     """
     video_path = Path(video_path)
     video_name = video_path.stem
@@ -26,8 +37,8 @@ def extract_frames(video_path, output_root=None, frame_interval=10):
         output_folder = video_path.parent / f"{video_name}_jpg"
         
     # 檢查是否已經處理過 (輸出資料夾存在且含有 jpg 檔案)
-    if output_folder.exists() and any(output_folder.glob("*.jpg")):
-        print(f"⏭️  已存在擷取圖片，跳過影片: {video_path.name}")
+    if not overwrite and output_folder.exists() and any(output_folder.glob("*.jpg")):
+        print(f"[SKIP] 已存在擷取圖片，跳過影片: {video_path.name}")
         return
         
     os.makedirs(output_folder, exist_ok=True)
@@ -36,17 +47,28 @@ def extract_frames(video_path, output_root=None, frame_interval=10):
     cap = cv2.VideoCapture(str(video_path))
     
     if not cap.isOpened():
-        print(f"❌ 無法開啟影片: {video_path}")
+        print(f"[ERROR] 無法開啟影片: {video_path}")
         return
         
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    # 計算擷取間隔 (frame_interval)
+    if target_fps is not None and target_fps > 0:
+        if fps > 0:
+            frame_interval = max(1, round(fps / target_fps))
+        else:
+            frame_interval = 6
+        print(f"[PROCESS] 正在處理影片: {video_path.name}")
+        print(f"   總幀數: {total_frames}, 原始FPS: {fps:.2f}, 目標FPS: {target_fps} (間隔: 每 {frame_interval} 幀一張)")
+    else:
+        if frame_interval is None:
+            frame_interval = 10
+        print(f"[PROCESS] 正在處理影片: {video_path.name}")
+        print(f"   總幀數: {total_frames}, 原始FPS: {fps:.2f}, 擷取間隔: 每 {frame_interval} 幀一張")
+    
     frame_count = 0
     saved_count = 0
-    
-    # 獲取影片總幀數 (僅供顯示進度)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    print(f"🎬 正在處理影片: {video_path.name}")
-    print(f"   總幀數: {total_frames}, 擷取間隔: {frame_interval}")
     
     while True:
         ret, frame = cap.read()
@@ -66,63 +88,121 @@ def extract_frames(video_path, output_root=None, frame_interval=10):
                 img_encoded.tofile(str(filepath))
                 saved_count += 1
             else:
-                print(f"❌ 圖片編碼失敗: {filename}")
+                print(f"[FAIL] 圖片編碼失敗: {filename}")
             
         frame_count += 1
         
         # 簡易進度顯示
-        if frame_count % 100 == 0:
+        if frame_count % 100 == 0 or frame_count == total_frames:
             progress = (frame_count / total_frames) * 100 if total_frames > 0 else 0
-            print(f"\r   进度: {progress:.1f}% ({frame_count}/{total_frames})", end="")
+            print(f"\r   進度: {progress:.1f}% ({frame_count}/{total_frames})", end="", flush=True)
             
     cap.release()
-    print(f"\n   ✅ 處理完成！擷取了 {saved_count} 張圖片，存於 '{output_folder.name}'\n")
+    print(f"\n   [SUCCESS] 處理完成！擷取了 {saved_count} 張圖片，存於 '{output_folder.name}'\n")
 
-def process_directory(directory_path, frame_interval=10, recursive=False):
+def process_directory(directory_path, frame_interval=None, target_fps=None, recursive=True, pattern=None, output_root=None, overwrite=False):
     """
     處理指定資料夾內的所有影片。
+    
+    :param directory_path: 目標資料夾
+    :param frame_interval: 每隔幾幀擷取一張
+    :param target_fps: 每秒擷取張數 (例如 5)
+    :param recursive: 是否遞迴搜尋子目錄
+    :param pattern: 檔名過濾關鍵字 (例如 "checkboard")
+    :param output_root: 輸出根目錄 (若為 None 則存於影片同目錄)
+    :param overwrite: 是否覆蓋已存在圖片
     """
     target_dir = Path(directory_path)
     if not target_dir.exists():
-        print(f"❌ 找不到目錄: {directory_path}")
+        print(f"[ERROR] 找不到目錄: {directory_path}")
         return
 
     # 定義常見的影片副檔名
-    video_extensions = ['*.mp4', '*.avi', '*.mkv', '*.mov', '*.flv', '*.wmv']
+    video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.flv', '.wmv'}
     
-    video_files = []
-    for ext in video_extensions:
-        if recursive:
-            video_files.extend(target_dir.rglob(ext))
-        else:
-            video_files.extend(target_dir.glob(ext))
+    if recursive:
+        video_files = [f for f in target_dir.rglob('*') if f.suffix.lower() in video_extensions]
+    else:
+        video_files = [f for f in target_dir.glob('*') if f.suffix.lower() in video_extensions]
+    
+    if pattern:
+        video_files = [f for f in video_files if pattern.lower() in f.name.lower()]
+        
+    video_files = sorted(video_files)
     
     if not video_files:
-        print(f"⚠️ 在 {directory_path} 中找不到指定的影片檔案。")
+        print(f"[WARN] 在 {directory_path} 中找不到指定的影片檔案 (過濾條件: pattern='{pattern}')。")
         return
 
-    print(f"🚀 發現 {len(video_files)} 個影片，準備開始處理...")
+    print(f"[START] 發現 {len(video_files)} 個影片，準備開始處理...")
+    for v in video_files:
+        print(f"   - {v}")
+    print("-" * 50)
     
     for video in video_files:
-        extract_frames(video, frame_interval=frame_interval)
+        extract_frames(
+            video_path=video,
+            output_root=output_root,
+            frame_interval=frame_interval,
+            target_fps=target_fps,
+            overwrite=overwrite
+        )
 
 def main():
-    # --- 使用者設定 ---
-    # 指定母資料夾/子資料夾
+    parser = argparse.ArgumentParser(description="將影片抽出圖片 (Frame extraction)")
+    parser.add_argument("--dir", "-d", type=str, default=None, help="目標影片資料夾路徑")
+    parser.add_argument("--interval", "-i", type=int, default=None, help="擷取間隔 (每 N 幀抓一張)")
+    parser.add_argument("--fps", "-f", type=float, default=None, help="每秒擷取張數 (例如 5 代表 1 秒抓 5 張)")
+    parser.add_argument("--pattern", "-p", type=str, default=None, help="檔名過濾關鍵字 (例如 checkboard)")
+    parser.add_argument("--output_root", "-o", type=str, default=None, help="輸出圖片根目錄 (預設為影片所在資料夾)")
+    parser.add_argument("--recursive", "-r", action="store_true", default=True, help="是否遞迴搜尋子目錄 (預設 True)")
+    parser.add_argument("--overwrite", action="store_true", default=False, help="若輸出資料夾已有圖片是否重新擷取覆蓋")
+
+    args = parser.parse_args()
+
+    # 若有帶入命令列參數
+    if args.dir is not None:
+        process_directory(
+            directory_path=args.dir,
+            frame_interval=args.interval,
+            target_fps=args.fps,
+            recursive=args.recursive,
+            pattern=args.pattern,
+            output_root=args.output_root,
+            overwrite=args.overwrite
+        )
+        return
+
+    # --- 互動模式 ---
     default_path = r"D:\Pitt\Project\2dto3d\v2"
     
-    print(f"📂 預設處理目錄: {default_path}")
+    print(f"[INFO] 預設處理目錄: {default_path}")
     print("您可以直接按 Enter 處理預設母資料夾下的所有子資料夾影片，或是輸入特定的子資料夾路徑。")
     input_path = input(f"請輸入路徑 (直接按 Enter 開始處理預設目錄): ").strip()
     
     if not input_path:
         input_path = default_path
     
-    interval_str = input("請輸入擷取間隔 (預設為 10): ").strip()
-    interval = int(interval_str) if interval_str.isdigit() else 10
+    fps_choice = input("是否以每秒指定張數 (FPS) 擷取？(例如輸入 5，若要使用固定幀數間隔請直接按 Enter): ").strip()
+    target_fps = None
+    interval = None
+    if fps_choice and fps_choice.replace('.', '', 1).isdigit():
+        target_fps = float(fps_choice)
+    else:
+        interval_str = input("請輸入擷取間隔幀數 (預設為 10): ").strip()
+        interval = int(interval_str) if interval_str.isdigit() else 10
     
-    # 執行處理 (開啟 recursive=True，以防影片在更深層的子目錄)
-    process_directory(input_path, frame_interval=interval, recursive=True)
+    pattern_str = input("請輸入檔名過濾關鍵字 (直接按 Enter 處理全部影片，例如輸入 checkboard): ").strip()
+    pattern = pattern_str if pattern_str else None
+    
+    # 執行處理
+    process_directory(
+        directory_path=input_path,
+        frame_interval=interval,
+        target_fps=target_fps,
+        recursive=True,
+        pattern=pattern
+    )
 
 if __name__ == "__main__":
     main()

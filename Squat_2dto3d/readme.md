@@ -16,6 +16,7 @@ We use `vision2`, `vision3`, `vision4`, and `vision5` to perform 3D reconstructi
 
 以下為 code 資料夾中各個 Python 執行檔的作用與注意事項：
 
+
 ### step0_video_to_jpg.py
 - **檔案目的**: 將影片抽出圖片 (Frame extraction)，為了後續 YOLO 辨識或棋盤格校正使用。
 - **注意**: 請確認程式內的影片路徑 (如 `TARGET_DIR` 或影片檔名) 是否正確，以免抽錯檔案。
@@ -28,13 +29,24 @@ We use `vision2`, `vision3`, `vision4`, and `vision5` to perform 3D reconstructi
 - **檔案目的**: 將 YOLO 辨識出的 2D 骨架座標，重新畫回原影片上以供人工肉眼檢查。
 - **注意**: 這是可選步驟，如果 3D 投影有問題，可以先用此步驟確認是否是 YOLO 本身在 2D 就已經抓錯。
 
-### step3_extrinsics.py
-- **檔案目的**: 執行自動外參校正，透過棋盤格找出各攝影機 (`vision2~5` 或 `RR/RLU/FL/FR`) 之間的相對 3D 位置與旋轉角度。
-- **注意**: 程式內已包含 vision3 與 vision4 相機對接時的 180 度翻轉修復機制。請確認目標資料夾的棋盤格圖片是否清晰。
+### step3.1_calibrate_intrinsics.py
+- **檔案目的**: 執行單相機內參校正 (Camera Intrinsic Calibration)，透過棋盤格影像計算各相機 (如 `i15`, `i16`, `i17` 或 `vision1~6`) 的內參矩陣 (`mtx`) 與畸變係數 (`dist`)。
+- **注意**: 輸出為 `.npz` 格式，完全相容於後續 `step3.2` 與 `step8`。支援 5x3 內部角點 (6x4格)、邊界超出過濾、離群值自動剔除及標記視覺化圖檔輸出。
+
+### step3.2_extrinsics_studio_squat.py / step3.2_extrinsics_iphone.py
+- **檔案目的**: 執行雙相機自動外參立體校正 (Stereo Extrinsic Calibration)，透過同步拍攝棋盤格計算攝影機間的相對旋轉矩陣 (`R`) 與平移向量 (`T`)。
+- **版本說明**:
+  - **`step3.2_extrinsics_studio_squat.py` (深蹲實驗室版本 - Squat)**: 適用於 `vision2~5` (`RR`, `RLU`, `FL`, `FR`)。內建 `RLU` (後方) 與 `FL` (前方) 對接時的 180 度翻轉修復機制，支援母目錄批次處理。
+  - **`step3.2_extrinsics_iphone.py` (iPhone 臥推版本 - Benchpress)**: 適用於 iPhone 15/16/17 (`i15`, `i16`, `i17`)。內建 `i15` ROI 去背雜訊過濾與 `i16` 180 度對向視角自動對齊。
 
 ### step4_manual_calibration.py
-- **檔案目的**: 執行手動外參校正。當自動校正找不到棋盤格時，可用此腳本手動點擊影像中的角點來計算外參。
-- **注意**: 滑鼠點擊的角點順序，必須與自動校正演算法的 1~15 點順序完全一致，否則 3D 空間會嚴重扭曲。
+- **檔案目的**: 執行手動與半自動外參校正（可拖曳微調升級版）。當自動校正角點有偏差或找不到棋盤格時，可使用此工具直接拖曳微調角點計算外參。
+- **核心功能**:
+  - **滑鼠拖曳與鍵盤微調**: 支援直接滑鼠左鍵按住拖曳（Drag & Drop）修改 1~15 個角點；點選角點後可用方向鍵 ($\uparrow, \downarrow, \leftarrow, \rightarrow$) 進行 1 pixel（Shift 為 5 pixel）精確微調。
+  - **一鍵載入 Visualized 對照圖**: 點選「從 Visualized 對照圖載入」，直接選取 `visualized/match_*.jpg`，系統自動載入兩台相機清晰原圖、關聯內參，並自動帶入初始 15 個角點。
+  - **輔助工具**: 提供右上角局部 4x 放大鏡 HUD（十字準心）、次像素精準幾何吸附 (`SubPix Snap`)、180 度點序反轉 (`Invert`)、滑鼠滾輪縮放與平移。
+  - **支援多影格合併校正**: 支援單張即時校正，亦可將多張微調後的影格「加入清單」進行多影格立體校正。
+- **注意**: 滑鼠點擊或微調的角點順序，必須與自動校正演算法的 1~15 點順序完全一致，第 1 列特別以桃紅色粗線標示。
 
 ### step5_batch_visualize.py
 - **檔案目的**: 批次產生校正對照圖 (產生 2-3, 3-4, 4-5 的角點匹配結果圖)，用於檢查外參校正是否正確對齊。
