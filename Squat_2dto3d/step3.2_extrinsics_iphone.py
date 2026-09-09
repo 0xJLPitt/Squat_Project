@@ -18,6 +18,8 @@
 
 import os
 import glob
+import json
+import re
 import cv2
 import numpy as np
 
@@ -79,6 +81,8 @@ def detect_corners_for_frame(img_bgr, cam_name, pattern_size=(5, 3), partner_nam
         if ret:
             corners[:, 0, 0] += roi_x1
             corners[:, 0, 1] += roi_y1
+            if should_flip_camera(cam_name, partner_name):
+                corners = corners[::-1, :, :].copy()
             return True, corners
 
     # 2. 通用與 i16, i17 偵測: 優先 SB 演算法
@@ -93,7 +97,11 @@ def detect_corners_for_frame(img_bgr, cam_name, pattern_size=(5, 3), partner_nam
             corners = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
 
     if ret:
-        # 依據對向相機設定進行 180 度翻轉以確保左右鏡頭物理點序 100% 一致
+        # i16 視角基準校準: OpenCV 傳統角點演算法起點位於右上，相差 180 度，先反轉至左側基準 (與 i15 同向)
+        if cam_name == "i16":
+            corners = corners[::-1, :, :].copy()
+
+        # 依據對向相機設定進行配對翻轉 (例如與 i17 配對時，i17 反轉至右側)
         if should_flip_camera(cam_name, partner_name):
             corners = corners[::-1, :, :].copy()
         return True, corners
@@ -107,11 +115,15 @@ def calibrate_stereo_pair(
     id1, id2,
     pattern_size=(5, 3),
     square_size=25.0,
-    vis_dir=None
+    vis_dir=None,
+    filter_by_vis=False
 ):
     """
     計算一對相機之間的相對外參 (Stereo Calibration)
+    若 filter_by_vis=True，將僅依據 vis_dir 中目前存在的 match_id1_id2_*.jpg 影格進行計算，
+    自動忽略您在該目錄中手動刪除的異常影格。
     """
+    import re
     objp = np.zeros((pattern_size[0] * pattern_size[1], 3), np.float32)
     objp[:, :2] = np.mgrid[0:pattern_size[0], 0:pattern_size[1]].T.reshape(-1, 2) * square_size
 
@@ -122,6 +134,36 @@ def calibrate_stereo_pair(
     print(f"[STEREO SCAN] 正在搜尋 {id1} 與 {id2} 的同步棋盤格...")
     print(f"==================================================")
 
+    # 檢查是否有來自 visualized 目錄的人工篩選白名單
+    allowed_frame_tags = None
+    if filter_by_vis and vis_dir and os.path.exists(vis_dir):
+        vis_prefix = f"match_{id1}_{id2}_"
+        vis_matches = [f for f in os.listdir(vis_dir) if f.startswith(vis_prefix) and f.endswith(".jpg")]
+        if vis_matches:
+            allowed_frame_tags = set()
+            for vf in vis_matches:
+                m = re.search(r"(frame\d+)", vf)
+                if m:
+                    allowed_frame_tags.add(m.group(1))
+            print(f"[FILTER] 啟用 Visualized 篩選白名單！僅使用您保留的 {len(allowed_frame_tags)} 組有效影格:")
+            print(f"         {sorted(list(allowed_frame_tags))}")
+
+    # 檢查是否有手動微調標註記錄 (manual_points.json)
+    manual_data = {}
+    cand_json_paths = [
+        os.path.join(os.path.dirname(vis_dir), "manual_points.json") if vis_dir else "",
+        r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\extrinsics\manual_points.json"
+    ]
+    for jp in cand_json_paths:
+        if jp and os.path.exists(jp):
+            try:
+                with open(jp, "r", encoding="utf-8") as f:
+                    manual_data = json.load(f)
+                print(f"[MANUAL] 成功載入手動微調點位庫 ({len(manual_data)} 筆紀錄): {jp}")
+                break
+            except Exception as e:
+                print(f"[WARN] 讀取 manual_points.json 失敗: {e}")
+
     obj_points = []
     img_points1 = []
     img_points2 = []
@@ -130,11 +172,14 @@ def calibrate_stereo_pair(
     # 尋找同步幀 (依據 frameXXXXX 索引對位)
     for f1 in files1:
         # 提取 frame 編號，例如 frame00000
-        import re
         match = re.search(r"(frame\d+)", f1)
         if not match:
             continue
         frame_tag = match.group(1)
+
+        # 若啟用篩選且此幀已被使用者自 visualized 目錄中刪除，則直接跳過
+        if allowed_frame_tags is not None and frame_tag not in allowed_frame_tags:
+            continue
 
         # 在 dir2 中搜尋相同 frame 編號的圖檔
         f2_candidates = [f for f in files2_set if frame_tag in f and f.endswith(".jpg")]
@@ -150,11 +195,29 @@ def calibrate_stereo_pair(
         if img1 is None or img2 is None:
             continue
 
-        ret1, c1 = detect_corners_for_frame(img1, id1, pattern_size, partner_name=id2)
-        ret2, c2 = detect_corners_for_frame(img2, id2, pattern_size, partner_name=id1)
+        # 優先檢查是否有 step4 手動微調標註點
+        k1 = f"{id1}_{id2}_{frame_tag}"
+        k2 = f"{id2}_{id1}_{frame_tag}"
+        is_manual_pts = False
+
+        if manual_data and k1 in manual_data:
+            c1 = np.array(manual_data[k1]["points1"], dtype=np.float32).reshape(-1, 1, 2)
+            c2 = np.array(manual_data[k1]["points2"], dtype=np.float32).reshape(-1, 1, 2)
+            ret1, ret2 = True, True
+            is_manual_pts = True
+            print(f"[MANUAL] 採用手動微調角點: {f1} <--> {f2}")
+        elif manual_data and k2 in manual_data:
+            c1 = np.array(manual_data[k2]["points2"], dtype=np.float32).reshape(-1, 1, 2)
+            c2 = np.array(manual_data[k2]["points1"], dtype=np.float32).reshape(-1, 1, 2)
+            ret1, ret2 = True, True
+            is_manual_pts = True
+            print(f"[MANUAL] 採用手動微調角點: {f1} <--> {f2}")
+        else:
+            ret1, c1 = detect_corners_for_frame(img1, id1, pattern_size, partner_name=id2)
+            ret2, c2 = detect_corners_for_frame(img2, id2, pattern_size, partner_name=id1)
 
         if ret1 and ret2:
-            print(f"[OK] 發現同步特徵影格: {f1} <--> {f2}")
+            print(f"[OK] 發現同步特徵影格: {f1} <--> {f2}{' (手動標記)' if is_manual_pts else ''}")
             obj_points.append(objp)
             img_points1.append(c1)
             img_points2.append(c2)
@@ -167,7 +230,7 @@ def calibrate_stereo_pair(
                         img1, img2, c1, c2,
                         id1, id2, f1, vis_dir,
                         pattern_size=pattern_size,
-                        is_manual=False
+                        is_manual=is_manual_pts
                     )
                 except Exception as e:
                     print(f"[WARN] 儲存對照可視化圖失敗: {e}")
@@ -227,6 +290,11 @@ if __name__ == "__main__":
 
     PATTERN_SIZE = (5, 3)
     SQUARE_SIZE = 25.0
+
+    # 【重要開關】是否依據 visualized 目錄中人工檢查後保留的照片進行外參計算？
+    # True: 僅使用您在 visualized 目錄中留下來的有效影格 (自動忽略被您刪除的異常對照圖)
+    # False: 重新使用原始資料夾所有圖檔計算並覆蓋全部視覺化圖檔
+    FILTER_BY_VISUALIZED = True
     # ============================================
 
     os.makedirs(OUTPUT_EXTRINSIC_DIR, exist_ok=True)
@@ -265,7 +333,8 @@ if __name__ == "__main__":
             cam1, cam2,
             pattern_size=PATTERN_SIZE,
             square_size=SQUARE_SIZE,
-            vis_dir=VIS_DIR
+            vis_dir=VIS_DIR,
+            filter_by_vis=FILTER_BY_VISUALIZED
         )
 
         if res:

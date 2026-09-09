@@ -252,6 +252,10 @@ class DraggableStereoCanvas(QWidget):
                 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
                 corners = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
 
+        # i16 基準正規化 (OpenCV 傳統角點演算法起點位於右上，相差 180 度，先反轉至左側基準)
+        if ret and corners is not None and self.cam_id == "i16":
+            corners = corners[::-1, :, :].copy()
+
         # 判斷是否需 180 度點序翻轉 (依據使用者在檔案頂部的對向相機設定)
         do_flip = force_flip if force_flip is not None else should_camera_flip(self.cam_id, partner_cam)
 
@@ -648,19 +652,48 @@ class StereoCalibWindow(QMainWindow):
         self.active_frame_name = ""
         self.intrinsic_path1 = ""
         self.intrinsic_path2 = ""
+        self.img1_path = ""
+        self.img2_path = ""
+        self.box_a = None
+        self.box_b = None
 
         # 多影格收集清單: [{"p1": pts1, "p2": pts2, "frame": name}, ...]
         self.collected_frames = []
 
         self.setAcceptDrops(True)
         self._init_ui()
-        self.statusBar().showMessage("準備就緒。可點擊「從 Visualized 對照圖載入」或手動載入左右相機圖檔（亦可直接拖曳圖檔進視窗）。")
+        self.statusBar().showMessage("準備就緒。可點擊「從 Visualized 對照圖載入」或拖曳 match_...jpg / 圖檔至視窗任一處。")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def eventFilter(self, watched, event):
+        # 攔截所有子元件的拖曳事件，實現全視窗任意位置拖曳
+        if event.type() in (event.DragEnter, event.DragMove):
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+                return True
+        elif event.type() == event.Drop:
+            urls = event.mimeData().urls()
+            paths = [
+                u.toLocalFile() for u in urls 
+                if os.path.exists(u.toLocalFile()) and u.toLocalFile().lower().endswith(
+                    (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
+                )
+            ]
+            if paths:
+                self.handle_dropped_paths(paths)
+                return True
+        return super().eventFilter(watched, event)
 
     def dropEvent(self, event):
         urls = event.mimeData().urls()
@@ -671,11 +704,13 @@ class StereoCalibWindow(QMainWindow):
                 (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
             )
         ]
-        if not paths: return
+        self.handle_dropped_paths(paths)
 
+    def handle_dropped_paths(self, paths):
+        if not paths: return
         # 優先檢查是否拖入 match_... 對照圖
         for p in paths:
-            if os.path.basename(p).startswith("match_"):
+            if "match_" in os.path.basename(p):
                 self.quick_load_visualized(p)
                 return
 
@@ -702,6 +737,10 @@ class StereoCalibWindow(QMainWindow):
         root_layout.setContentsMargins(10, 8, 10, 8)
         root_layout.setSpacing(8)
 
+        # 全視窗拖曳支援
+        main_widget.setAcceptDrops(True)
+        main_widget.installEventFilter(self)
+
         # 1. 頂部快速工作列
         top_bar = QHBoxLayout()
         self.btn_load_vis = QPushButton("📂 從 Visualized 對照圖載入 (推薦)")
@@ -709,12 +748,17 @@ class StereoCalibWindow(QMainWindow):
         self.btn_load_vis.setToolTip("選取 benchpress_3D/extrinsics/visualized 中的 match_... 圖片，自動載入雙機原圖、內參並辨識點位！")
         
         self.btn_select_dir = QPushButton("選擇專案目錄")
-        self.lbl_dir = QLabel("未選取目錄 (預設為當前執行位置)")
+        self.lbl_dir = QLabel("專案目錄: benchpress_3D")
         self.lbl_dir.setStyleSheet("color: #aaa; font-weight: bold;")
 
         top_bar.addWidget(self.btn_load_vis)
         top_bar.addWidget(self.btn_select_dir)
         top_bar.addWidget(self.lbl_dir)
+        top_bar.addSpacing(15)
+
+        lbl_hint = QLabel("💡 提示: 可直接拖曳任何 match_*.jpg 對照圖至視窗任一處！")
+        lbl_hint.setStyleSheet("color: #38bdf8; font-size: 11px;")
+        top_bar.addWidget(lbl_hint)
         top_bar.addStretch()
 
         self.btn_help = QPushButton("❓ 操作說明")
@@ -723,10 +767,15 @@ class StereoCalibWindow(QMainWindow):
 
         # 2. 畫布區域 (左右雙分割)
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setAcceptDrops(True)
+        splitter.installEventFilter(self)
 
         # 相機 A 區塊
         box_a = QGroupBox("相機 A (左視角)")
         box_a.setStyleSheet("QGroupBox { font-weight: bold; color: #38bdf8; }")
+        box_a.setAcceptDrops(True)
+        box_a.installEventFilter(self)
+        self.box_a = box_a
         layout_a = QVBoxLayout(box_a)
         ctrl_a = QHBoxLayout()
         self.btn_load_a = QPushButton("載入影像 A")
@@ -763,6 +812,9 @@ class StereoCalibWindow(QMainWindow):
         # 相機 B 區塊
         box_b = QGroupBox("相機 B (右視角)")
         box_b.setStyleSheet("QGroupBox { font-weight: bold; color: #a78bfa; }")
+        box_b.setAcceptDrops(True)
+        box_b.installEventFilter(self)
+        self.box_b = box_b
         layout_b = QVBoxLayout(box_b)
         ctrl_b = QHBoxLayout()
         self.btn_load_b = QPushButton("載入影像 B")
@@ -814,15 +866,23 @@ class StereoCalibWindow(QMainWindow):
 
         # 輸出設定與計算
         bottom_layout.addStretch()
+        self.btn_save_pts = QPushButton("💾 僅儲存微調點位")
+        self.btn_save_pts.setStyleSheet("background-color: #2563eb; color: white; font-weight: bold; font-size: 13px; padding: 8px 14px; border-radius: 4px;")
+        self.btn_save_pts.setToolTip("將目前微調後的角點座標寫入 manual_points.json 並更新對照圖，供 step3.2 整體校正優先採用。")
+
         self.btn_calc_single = QPushButton("🚀 單張計算並儲存外參")
         self.btn_calc_single.setStyleSheet("background-color: #15803d; color: white; font-weight: bold; font-size: 13px; padding: 8px 16px; border-radius: 4px;")
         
         self.btn_calc_multi = QPushButton("🌟 使用所有收集影格計算外參")
         self.btn_calc_multi.setStyleSheet("background-color: #047857; color: white; font-weight: bold; font-size: 13px; padding: 8px 16px; border-radius: 4px;")
 
+        bottom_layout.addWidget(self.btn_save_pts)
         bottom_layout.addWidget(self.btn_calc_single)
         bottom_layout.addWidget(self.btn_calc_multi)
         root_layout.addWidget(bottom_frame)
+
+        # 連接訊號
+        self.btn_save_pts.clicked.connect(self.save_manual_points)
 
         # 連接訊號
         self.btn_load_vis.clicked.connect(self.quick_load_visualized)
@@ -874,18 +934,38 @@ class StereoCalibWindow(QMainWindow):
     # ================= 核心亮點: 快速從 Visualized 對照圖載入 =================
     def quick_load_visualized(self, match_path=None):
         """
-        選取 extrinsics/visualized 中的 match_... 圖檔，
+        選取或拖入 extrinsics/visualized 中的 match_... 圖檔，
         自動解析相機配對與影格，定位原始雙圖與內參，並自動執行初始角點辨識。
+        若 manual_points.json 中已有微調記錄，將優先載入微調後的點位。
         """
         path = match_path
-        if not path:
+        DEFAULT_PROJECT_DIR = r"D:\Pitt\Project\Squat_Project\video\benchpress_3D"
+
+        # 若傳入的可能是相對路徑或僅檔名，嘗試解析其完整位置
+        if path:
+            path = str(path).strip("\"'")
+            if not os.path.exists(path):
+                base = os.path.basename(path)
+                search_roots = [self.target_dir, DEFAULT_PROJECT_DIR, os.getcwd()]
+                for sroot in search_roots:
+                    if not sroot or not os.path.exists(sroot): continue
+                    vis_cand = os.path.join(sroot, "extrinsics", "visualized", base)
+                    if os.path.exists(vis_cand):
+                        path = vis_cand
+                        break
+                    cands = glob.glob(os.path.join(sroot, "**", base), recursive=True)
+                    if cands:
+                        path = cands[0]
+                        break
+
+        if not path or not os.path.exists(path):
             start_dir = ""
             if self.target_dir:
                 cand = os.path.join(self.target_dir, "extrinsics", "visualized")
                 if os.path.exists(cand): start_dir = cand
                 else: start_dir = self.target_dir
             else:
-                default_vis = r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\extrinsics\visualized"
+                default_vis = os.path.join(DEFAULT_PROJECT_DIR, "extrinsics", "visualized")
                 if os.path.exists(default_vis): start_dir = default_vis
 
             path, _ = QFileDialog.getOpenFileName(
@@ -896,7 +976,7 @@ class StereoCalibWindow(QMainWindow):
 
         filename = os.path.basename(path)
         # 解析 match_{cam1}_{cam2}_{frame_info}.jpg
-        m = re.match(r"match_([a-zA-Z0-9]+)_([a-zA-Z0-9]+)_(.+)", filename)
+        m = re.search(r"match_([a-zA-Z0-9]+)_([a-zA-Z0-9]+)_(.+)", filename)
         if not m:
             QMessageBox.warning(self, "格式不符", f"無法從檔名辨識相機配對: {filename}\n標準格式應為 match_cam1_cam2_frameXXXXX.jpg")
             return
@@ -906,34 +986,91 @@ class StereoCalibWindow(QMainWindow):
         self.canvas_a.cam_id = c1
         self.canvas_b.cam_id = c2
 
-        # 提取 frame 編號 (例如 frame00006)
+        # 提取 frame 編號 (例如 frame00012)
         fm = re.search(r"(frame\d+)", rest)
-        ftag = fm.group(1) if fm else ""
+        if not fm:
+            fm = re.search(r"(\d+)", rest)
+            ftag = f"frame{int(fm.group(1)):05d}" if fm else rest
+        else:
+            ftag = fm.group(1)
         self.active_frame_name = rest
 
-        # 推算專案根目錄
+        # 推算專案根目錄 (優先尋找同時存在 c1 與 c2 影像資料夾的目錄)
         vis_parent = os.path.abspath(os.path.join(os.path.dirname(path), "..", ".."))
-        root_dir = self.target_dir or vis_parent
-        if not os.path.exists(root_dir):
-            root_dir = r"D:\Pitt\Project\Squat_Project\video\benchpress_3D"
+        cand_roots = [
+            self.target_dir,
+            vis_parent,
+            DEFAULT_PROJECT_DIR,
+            r"D:\Pitt\Project\Squat_Project\video\benchpress_3D",
+            os.path.abspath(os.path.join(os.path.dirname(path), "..")),
+            os.getcwd()
+        ]
+        root_dir = None
+        for r_cand in cand_roots:
+            if not r_cand or not os.path.exists(r_cand):
+                continue
+            has_c1 = os.path.exists(os.path.join(r_cand, c1)) or os.path.exists(os.path.join(r_cand, f"{c1}_jpg"))
+            has_c2 = os.path.exists(os.path.join(r_cand, c2)) or os.path.exists(os.path.join(r_cand, f"{c2}_jpg"))
+            if has_c1 and has_c2:
+                root_dir = r_cand
+                break
+        if not root_dir:
+            root_dir = self.target_dir or DEFAULT_PROJECT_DIR
         self.set_target_dir(root_dir)
 
-        # 搜尋相機 1 與相機 2 的原圖
-        def find_camera_frame(cam, tag):
-            candidates = glob.glob(os.path.join(root_dir, cam, "**", f"*{tag}*.jpg"), recursive=True)
+        # 智慧搜尋相機 1 與相機 2 的原圖 (主動排除 extrinsics 與 visualized)
+        def find_camera_frame(cam, tag, hint_str=""):
+            search_dirs = [
+                os.path.join(root_dir, cam),
+                os.path.join(root_dir, f"{cam}_jpg")
+            ]
+            candidates = []
+            for sdir in search_dirs:
+                if os.path.exists(sdir):
+                    raw_cands = glob.glob(os.path.join(sdir, "**", f"*{tag}*.jpg"), recursive=True)
+                    for rc in raw_cands:
+                        rc_norm = rc.replace("/", "\\").lower()
+                        if "\\extrinsics\\" in rc_norm or "\\visualized\\" in rc_norm or "\\intrinsics\\" in rc_norm:
+                            continue
+                        candidates.append(rc)
             if not candidates:
-                candidates = glob.glob(os.path.join(root_dir, f"{cam}_jpg", "**", f"*{tag}*.jpg"), recursive=True)
-            return candidates[0] if candidates else None
+                return None
+            if len(candidates) == 1:
+                return candidates[0]
+            # 若有多個候選 (如 external1 與 external2)，智慧比對 hint_str (來自對照圖檔名)
+            hint_lower = hint_str.lower()
+            scored = []
+            for cand in candidates:
+                cand_lower = cand.lower()
+                score = 0
+                if "external1" in hint_lower and "external1" in cand_lower:
+                    score += 10
+                elif "external2" in hint_lower and "external2" in cand_lower:
+                    score += 10
+                elif "external" in hint_lower and "external" in cand_lower:
+                    score += 5
+                # 預設偏好 external1 
+                if "checkboard_external1" in cand_lower or "checkboard_external_jpg" in cand_lower:
+                    score += 2
+                scored.append((score, cand))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return scored[0][1]
 
-        img1_path = find_camera_frame(c1, ftag)
-        img2_path = find_camera_frame(c2, ftag)
+        img1_path = find_camera_frame(c1, ftag, rest)
+        img2_path = find_camera_frame(c2, ftag, rest)
 
         if not img1_path or not img2_path:
             QMessageBox.warning(
                 self, "找不到原始圖檔", 
-                f"未能自動在 {root_dir} 找到 {c1} 或 {c2} 的 {ftag} 圖檔。\n請改用手動載入左右相機圖檔。"
+                f"未能自動在 {root_dir} 找到 {c1} 或 {c2} 的 {ftag} 原圖圖檔。\n"
+                f"相機1 ({c1}): {'✓ 已找到' if img1_path else '❌ 未找到'}\n"
+                f"相機2 ({c2}): {'✓ 已找到' if img2_path else '❌ 未找到'}\n\n"
+                f"請檢查相機子目錄結構是否正確。"
             )
             return
+
+        self.img1_path = img1_path
+        self.img2_path = img2_path
 
         # 載入雙圖
         ok1 = self.canvas_a.load_image(img1_path, cam_id=c1)
@@ -951,14 +1088,132 @@ class StereoCalibWindow(QMainWindow):
             self.chk_flip_a.blockSignals(False)
             self.chk_flip_b.blockSignals(False)
 
-            # 自動執行角點辨識 (傳入反轉參數)
-            self.canvas_a.auto_detect_corners(partner_cam=c2, force_flip=flip_a)
-            self.canvas_b.auto_detect_corners(partner_cam=c1, force_flip=flip_b)
+            # 優先檢查是否已有手動微調記錄 (manual_points.json)
+            manual_file = os.path.join(root_dir, "extrinsics", "manual_points.json")
+            manual_loaded = False
+            if os.path.exists(manual_file):
+                try:
+                    with open(manual_file, "r", encoding="utf-8") as f:
+                        mdata = json.load(f)
+                    k1 = f"{c1}_{c2}_{ftag}"
+                    k2 = f"{c2}_{c1}_{ftag}"
+                    if k1 in mdata:
+                        self.canvas_a.points = mdata[k1]["points1"]
+                        self.canvas_b.points = mdata[k1]["points2"]
+                        self.canvas_a.update()
+                        self.canvas_b.update()
+                        manual_loaded = True
+                    elif k2 in mdata:
+                        self.canvas_a.points = mdata[k2]["points2"]
+                        self.canvas_b.points = mdata[k2]["points1"]
+                        self.canvas_a.update()
+                        self.canvas_b.update()
+                        manual_loaded = True
+                except Exception as e:
+                    print(f"[WARN] 讀取 manual_points.json 發生異常: {e}")
+
+            if not manual_loaded:
+                # 自動執行角點辨識 (傳入相機配對與反轉參數)
+                self.canvas_a.auto_detect_corners(partner_cam=c2, force_flip=flip_a)
+                self.canvas_b.auto_detect_corners(partner_cam=c1, force_flip=flip_b)
 
             # 自動尋找內參
             self._auto_locate_intrinsics(root_dir, c1, c2)
 
-            self.statusBar().showMessage(f"成功載入 {c1} <-> {c2} 影格: {ftag}！角點已自動標註，對向相機反轉已配置完成。")
+            # 更新標題與點數顯示
+            if self.box_a:
+                self.box_a.setTitle(f"相機 A ({c1}) - {os.path.basename(img1_path)}")
+            if self.box_b:
+                self.box_b.setTitle(f"相機 B ({c2}) - {os.path.basename(img2_path)}")
+            self.update_point_counts()
+            self.setWindowTitle(f"手動外參校正與標記微調 - [{c1} <-> {c2}] 影格: {ftag}")
+
+            msg = (
+                f"成功載入 {c1} <-> {c2} ({ftag})！已套用先前儲存的手動微調點位。"
+                if manual_loaded else
+                f"成功載入 {c1} <-> {c2} ({ftag}) 原始影像與內參！15 個角點已自動標註並完成防翻轉對位。"
+            )
+            self.statusBar().showMessage(msg)
+
+    def _record_manual_points(self, c1, c2, ftag, p1, p2):
+        """將微調後的點位紀錄持久化至 extrinsics/manual_points.json"""
+        out_dir = self.target_dir or "."
+        ext_dir = os.path.join(out_dir, "extrinsics")
+        os.makedirs(ext_dir, exist_ok=True)
+        json_path = os.path.join(ext_dir, "manual_points.json")
+        
+        data = {}
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+
+        key = f"{c1}_{c2}_{ftag}"
+        data[key] = {
+            "cam1": c1,
+            "cam2": c2,
+            "frame_tag": ftag,
+            "img1_file": os.path.basename(self.img1_path) if self.img1_path else "",
+            "img2_file": os.path.basename(self.img2_path) if self.img2_path else "",
+            "points1": p1,
+            "points2": p2,
+        }
+
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            return json_path
+        except Exception as e:
+            print(f"[WARN] 儲存 manual_points.json 失敗: {e}")
+            return None
+
+    def save_manual_points(self):
+        """僅儲存目前微調的點位至 manual_points.json 並重新繪製對照圖 (不覆蓋外參 .npz)"""
+        p1 = self.canvas_a.points
+        p2 = self.canvas_b.points
+        c1 = self.canvas_a.cam_id or self.pair_id[0]
+        c2 = self.canvas_b.cam_id or self.pair_id[1]
+
+        if not p1 or not p2:
+            QMessageBox.warning(self, "提示", "畫布上尚無點位，請先載入並標註點位！")
+            return
+        if len(p1) != len(p2):
+            QMessageBox.warning(self, "警告", f"左右兩邊點數不一致 ({len(p1)} vs {len(p2)})，請確認點數！")
+            return
+
+        ftag = self.active_frame_name or "manual_frame"
+        json_path = self._record_manual_points(c1, c2, ftag, p1, p2)
+
+        # 重新產生並覆蓋視覺化對照圖
+        vis_msg = ""
+        out_dir = self.target_dir or "."
+        vis_dir = os.path.join(out_dir, "extrinsics", "visualized")
+        if save_stereo_visualization and self.canvas_a.cv_img is not None and self.canvas_b.cv_img is not None:
+            try:
+                os.makedirs(vis_dir, exist_ok=True)
+                frame_tag = self.active_frame_name or os.path.basename(self.canvas_a.image_path) or "manual_frame.jpg"
+                c1_pts = np.array(p1, dtype=np.float32).reshape(-1, 1, 2)
+                c2_pts = np.array(p2, dtype=np.float32).reshape(-1, 1, 2)
+                saved_vis = save_stereo_visualization(
+                    self.canvas_a.cv_img, self.canvas_b.cv_img,
+                    c1_pts, c2_pts, c1, c2, frame_tag, vis_dir,
+                    pattern_size=(5, 3), is_manual=True
+                )
+                vis_msg = f"\n\n📸 視覺化對照圖已更新覆蓋至:\n{saved_vis}"
+            except Exception as e:
+                print(f"[WARN] 儲存對照圖失敗: {e}")
+
+        QMessageBox.information(
+            self, "微調點位儲存成功！",
+            f"相機配對: {c1} <-> {c2}\n"
+            f"影格標記: {ftag}\n"
+            f"角點數量: {len(p1)} 點\n\n"
+            f"微調點位已寫入資料庫:\n-> {json_path}{vis_msg}\n\n"
+            f"💡 說明: 後續 step3.2 執行整體外參校正時，將自動優先採用此處的手動微調點位！"
+        )
+        self.statusBar().showMessage(f"微調點位已成功儲存至 manual_points.json！")
 
     def _auto_locate_intrinsics(self, root_dir, c1, c2):
         """自動尋找兩相機內參"""
@@ -1122,13 +1377,18 @@ class StereoCalibWindow(QMainWindow):
         if out_path1 != out_path2:
             np.savez(out_path2, **save_dict)
 
-        # 自動重新產生並覆蓋視覺化對照圖
+        # 自動重新產生並覆蓋視覺化對照圖，同時更新 manual_points.json
         vis_msg = ""
+        frame_tag = self.active_frame_name or (os.path.basename(self.canvas_a.image_path) if self.canvas_a.image_path else "manual_frame.jpg")
+        # 紀錄微調點位
+        p1_list = [p.copy() if hasattr(p, "copy") else list(p) for p in self.canvas_a.points]
+        p2_list = [p.copy() if hasattr(p, "copy") else list(p) for p in self.canvas_b.points]
+        json_path = self._record_manual_points(c1, c2, frame_tag, p1_list, p2_list)
+
         try:
             if save_stereo_visualization and self.canvas_a.cv_img is not None and self.canvas_b.cv_img is not None:
                 vis_dir = os.path.join(ext_dir, "visualized")
                 os.makedirs(vis_dir, exist_ok=True)
-                frame_tag = self.active_frame_name or os.path.basename(self.canvas_a.image_path) or "manual_frame.jpg"
                 c1_pts = np.array(self.canvas_a.points, dtype=np.float32).reshape(-1, 1, 2)
                 c2_pts = np.array(self.canvas_b.points, dtype=np.float32).reshape(-1, 1, 2)
                 
@@ -1137,7 +1397,7 @@ class StereoCalibWindow(QMainWindow):
                     c1_pts, c2_pts, c1, c2, frame_tag, vis_dir,
                     pattern_size=(5, 3), is_manual=True
                 )
-                vis_msg = f"\n\n📸 視覺化對照圖已更新儲存至:\n{saved_vis}"
+                vis_msg = f"\n\n📸 視覺化對照圖已更新覆蓋至:\n{saved_vis}"
         except Exception as e:
             print(f"[WARN] 儲存對照圖失敗: {e}")
 
@@ -1149,15 +1409,19 @@ class StereoCalibWindow(QMainWindow):
             f"重投影誤差 (RMS): {ret:.4f} pixels ({quality})\n"
             f"相機基線距離 (Baseline): {baseline_mm:.1f} mm ({baseline_mm/10:.1f} cm)\n\n"
             f"平移向量 T (mm):\n{T.ravel()}\n\n"
-            f"外參檔案已儲存至:\n-> {out_path1}{vis_msg}"
+            f"外參檔案已儲存至:\n-> {out_path1}{vis_msg}\n\n"
+            f"微調點位已寫入:\n-> {json_path}"
         )
         self.statusBar().showMessage(f"校正完成！RMS: {ret:.4f} px | 基線: {baseline_mm:.1f} mm")
 
     def show_help(self):
         msg = (
             "【操作指南】\n\n"
-            "1. 快速載入對照圖:\n"
-            "   點擊頂部「從 Visualized 對照圖載入」，選取 match_*.jpg，系統會自動定位雙機原圖、內參並帶入初始角點。\n\n"
+            "1. 快速載入對照圖 (3 種方式):\n"
+            "   - 直接將 match_*.jpg 拖曳至視窗任何角落放開。\n"
+            "   - 點擊頂部「從 Visualized 對照圖載入」按鈕手動選檔。\n"
+            "   - 命令列直接執行: python step4_manual_calibration.py match_...jpg\n"
+            "   系統將自動精準定位雙機原始影格、載入內參、並自動標註 15 點 (含對向防翻轉與 ROI)。\n\n"
             "2. 角點微調 (拖曳與鍵盤):\n"
             "   - 滑鼠懸停至角點圓圈，左鍵按住即可自由拖曳移動。\n"
             "   - 左鍵點選角點後，可用鍵盤方向鍵 (Up/Down/Left/Right) 進行 1 pixel 微調（Shift 為 5 pixel）。\n"
@@ -1169,9 +1433,10 @@ class StereoCalibWindow(QMainWindow):
             "   - [⚡ 自動辨識]: 重新針對當前畫面偵測 15 個角點。\n"
             "   - [🧲 次像素吸附]: 自動吸附至精確像素幾何鞍點。\n"
             "   - [🔄 翻轉點序]: 180度倒轉 1~15 點順序（解決對向鏡頭倒轉問題）。\n\n"
-            "5. 計算外參:\n"
-            "   - [單張計算]: 直接以目前畫布微調好的點位計算立體外參。\n"
-            "   - [加入清單 / 多影格計算]: 支援微調多張不同影格後合併計算更精準的外參。"
+            "5. 儲存與計算外參:\n"
+            "   - [💾 僅儲存微調點位]: 僅更新 manual_points.json 與對照圖，供 step3.2 整體計算使用。\n"
+            "   - [🚀 單張計算並儲存外參]: 直接以目前畫布微調好的點位計算立體外參。\n"
+            "   - [➕ 加入清單 / 🌟 多影格計算]: 支援微調多張不同影格後合併計算更精準的外參。"
         )
         QMessageBox.information(self, "操作指南", msg)
 
@@ -1187,8 +1452,14 @@ if __name__ == "__main__":
     window = StereoCalibWindow()
     if os.path.exists(DEFAULT_PROJECT_DIR):
         window.set_target_dir(DEFAULT_PROJECT_DIR)
-    elif len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
-        window.set_target_dir(sys.argv[1])
+
+    # 檢查命令列參數 (支援傳入目錄、match_對照圖檔或一般圖檔)
+    if len(sys.argv) > 1:
+        arg = sys.argv[1].strip("\"'")
+        if os.path.isdir(arg):
+            window.set_target_dir(arg)
+        elif os.path.isfile(arg) or "match_" in os.path.basename(arg) or arg.lower().endswith((".jpg", ".png", ".jpeg")):
+            window.quick_load_visualized(arg)
 
     window.show()
     sys.exit(app.exec_())
