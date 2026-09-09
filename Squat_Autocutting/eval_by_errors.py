@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 #讀取 Ground Truth JSON，萃取並列印出所有出現過的深蹲錯誤型態標籤
 #用於確認標註中存在哪些動作分類。
-gt_path = r"C:\squat\squat_dataset2_0706\S83_S108.json"
-dataset_dir = r"C:\squat\squat_dataset2_0706"
+gt_path = r"D:\squat_dataset\S01_S108.json"
+dataset_dir = r"D:\squat_dataset"
 pred_json_path = os.path.join(dataset_dir, "segments.json")
 
 # Import helpers from eval_segments
@@ -31,6 +31,17 @@ EXCLUDE_RECORDINGS = [
     "recording_20260611_153424",  # S108
     "recording_20260611_153127",  # S108
     "recording_20260511_133807",  # S084
+    "recording_20251203_111026",  # S016
+    "recording_20251125_102222",  # S008
+    "recording_20260205_112900",  # S027
+    "recording_20260325_154346",  # S049
+    "recording_20260420_132533",  # S060
+    "recording_20260427_144840",  # S068
+    "recording_20260507_164157",  # S042
+    "recording_20260311_164032",  # S039
+    "recording_20260406_104653",  # S054
+    "recording_20260504_113752",  # S077
+    "recording_20251126_120959",  # S010
 ]
 
 print(f"Total raw items in GT: {len(gt_raw)}")

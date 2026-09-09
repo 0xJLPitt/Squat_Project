@@ -394,7 +394,7 @@ def load_gt_records(gt_json_path):
     return full_dict, rec_dict
 
 def visualize_basic_segmentation(rec_path, df_pose, df_bar, reps, output_path, gt_reps=None):
-    """使用 GT (S83_S108.json) 與 yolo_coordinates.txt 畫出基本切割情況"""
+    """使用 GT (S01_S108.json) 與 yolo_coordinates.txt 畫出基本切割情況"""
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
     try:
         bar_y = df_bar['bar_y_smoothed'].values if 'bar_y_smoothed' in df_bar.columns else df_bar['bar_y'].values
@@ -404,14 +404,14 @@ def visualize_basic_segmentation(rec_path, df_pose, df_bar, reps, output_path, g
         ax1.plot(frames, bar_y, label='Barbell Y (Pixels)', color='#3498db', linewidth=2)
         ax1.invert_yaxis()
         
-        # 畫出黃色螢光區間 (優先使用 Ground Truth S83_S108)
+        # 畫出黃色螢光區間 (優先使用 Ground Truth S01_S108)
         spans_to_draw = []
         if gt_reps:
             for item in gt_reps:
                 s_f, e_f = parse_rep_frames(item)
                 if s_f is not None and e_f is not None:
                     spans_to_draw.append((s_f, e_f))
-            span_label = "GT Segment (S83_S108)"
+            span_label = "GT Segment (S01_S108)"
         else:
             for r in reps:
                 spans_to_draw.append((r['start'], r['end']))
@@ -485,18 +485,20 @@ def main():
     parser.add_argument("--input", required=True, help="Input directory containing recordings")
     parser.add_argument("--fps", type=int, default=30, help="Video FPS")
     parser.add_argument("--normalize", action="store_true", help="Whether to output normalized CSVs")
-    parser.add_argument("--gt", type=str, default=r"C:\squat\squat_dataset2_0706\S83_S108.json", help="Ground Truth JSON Path")
+    parser.add_argument("--gt", type=str, default=r"D:\squat_dataset\S01_S108.json", help="Ground Truth JSON Path")
     args = parser.parse_args()
 
     demo_dir = args.input
     extractor = SquatFeatureExtractor(fps=args.fps)
     
-    # 載入 Ground Truth (S83_S108.json)
+    # 載入 Ground Truth (S01_S108.json)
     gt_path = args.gt
     if not os.path.exists(gt_path):
-        candidate = os.path.join(demo_dir, "S83_S108.json")
-        if os.path.exists(candidate):
-            gt_path = candidate
+        for candidate_name in ["S01_S108.json", "S83_S108.json"]:
+            candidate = os.path.join(demo_dir, candidate_name)
+            if os.path.exists(candidate):
+                gt_path = candidate
+                break
             
     print(f"[INFO] 載入 Ground Truth: {gt_path}")
     gt_full_dict, gt_rec_dict = load_gt_records(gt_path)
@@ -535,6 +537,17 @@ def main():
         "recording_20260611_153424",  # S108
         "recording_20260611_153127",  # S108
         "recording_20260511_133807",  # S084
+        "recording_20251203_111026",  # S016
+        "recording_20251125_102222",  # S008
+        "recording_20260205_112900",  # S027
+        "recording_20260325_154346",  # S049
+        "recording_20260420_132533",  # S060
+        "recording_20260427_144840",  # S068
+        "recording_20260507_164157",  # S042
+        "recording_20260311_164032",  # S039
+        "recording_20260406_104653",  # S054
+        "recording_20260504_113752",  # S077
+        "recording_20251126_120959",  # S010
     ]
 
     current_subject = None

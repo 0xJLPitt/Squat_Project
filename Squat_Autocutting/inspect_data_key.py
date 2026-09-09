@@ -1,7 +1,7 @@
 import json
 import os
 
-gt_path = r"C:\squat\squat_dataset2_0706\S83_S108.json"
+gt_path = r"D:\squat_dataset\S01_S108.json"
 out_path = r"C:\squat\Squat_Project\Squat_Autocutting\gt_data_structure.txt"
 
 with open(gt_path, 'r', encoding='utf-8') as f:

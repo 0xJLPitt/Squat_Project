@@ -6,7 +6,7 @@ import sys
 # ==============================================================================
 # 預設處理路徑 (當未提供 --input 參數時，將預設執行此路徑)
 # ==============================================================================
-DEFAULT_INPUT_PATH = r"C:\squat\squat_dataset2_0706"
+DEFAULT_INPUT_PATH = r"D:\squat_dataset"
 
 def main():
     parser = argparse.ArgumentParser(description="自動化深蹲影片切片腳本 (包含特徵計算與影片拼接)")

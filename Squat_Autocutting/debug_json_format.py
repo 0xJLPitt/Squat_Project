@@ -2,12 +2,12 @@ import json
 import os
 import re
 
-gt_path = r"C:\squat\squat_dataset2_0706\S83_S108.json"
-pred_path = r"C:\squat\squat_dataset2_0706\segments.json"
+gt_path = r"D:\squat_dataset\S01_S108.json"
+pred_path = r"D:\squat_dataset\segments.json"
 out_path = r"C:\squat\Squat_Project\Squat_Autocutting\debug_output.txt"
 
 with open(out_path, "w", encoding="utf-8") as out:
-    out.write("=== GT DATA (S83_S108.json) ===\n")
+    out.write("=== GT DATA (S01_S108.json) ===\n")
     if os.path.exists(gt_path):
         with open(gt_path, "r", encoding="utf-8") as f:
             gt_data = json.load(f)

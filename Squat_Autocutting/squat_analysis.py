@@ -199,19 +199,42 @@ class SquatFeatureExtractor:
 
         # 1. 尋找所有深蹲的波谷 (bar_y 的波峰，因為 y 向下為正)
         # prominence=15, distance=30 確保二次彈跳 (W型波谷) 與快節奏淺蹲皆能被精準捕捉，且不重複採樣
-        bottoms_cand, _ = find_peaks(bar_y, prominence=15, distance=30)
+        bottoms_cand, properties = find_peaks(bar_y, prominence=15, distance=30)
+        cand_prominences = properties['prominences'] if 'prominences' in properties else []
         
-        # 過濾真正的深蹲波谷：排除小碎步與出槓沉降浮動
+        # 步驟 1-1：計算相對深度/振幅離群值篩選門檻 (過濾回槓/出槓與微幅晃動)
+        if len(cand_prominences) > 0:
+            median_prom = float(np.median(cand_prominences))
+            max_prom = float(np.max(cand_prominences))
+            # 若整段影片有明確深蹲波形，相對於中位數振幅過淺（< 45% 且小於 80px）的波峰視為出槓/回槓/晃動雜訊
+            if median_prom >= 60.0:
+                min_prom_thresh = max(median_prom * 0.45, 40.0)
+            else:
+                min_prom_thresh = max(max_prom * 0.40, 35.0)
+        else:
+            min_prom_thresh = 30.0
+
+        # 步驟 1-2：過濾真正的深蹲波谷：排除小碎步、出槓與回槓沉降浮動
         bottoms = []
-        for b in bottoms_cand:
+        for i_cand, b in enumerate(bottoms_cand):
             knee_a = knee_angles_val[b]
             hip_a = hip_angles_val[b]
             drop_b = bar_y[b] - bar_y[max(0, b - 30)]
+            prom_b = cand_prominences[i_cand] if i_cand < len(cand_prominences) else drop_b
             
+            # 排除相對深度過淺的離群波峰 (如回槓或出槓的微小位移)
+            if prom_b < min_prom_thresh:
+                continue
+
             # 真正的深蹲波谷條件：
-            # 1. 膝關節與髖關節皆有實質下蹲屈曲 (knee < 148° 且 hip < 152°)
-            # 2. 或是淺蹲/下蹲不足但有顯著槓鈴下沉位移 (knee < 162° 且 hip < 162° 且 drop_b > 45px)
-            is_valid_bottom = (knee_a < 148.0 and hip_a < 152.0) or (knee_a < 162.0 and hip_a < 162.0 and drop_b > 45.0)
+            # 1. 顯著深蹲位移特判：槓鈴下沉幅度顯著 (prom >= 75px) 且膝關節有彎曲 (knee < 155°)，避免受限於髖部關鍵點遮擋或純膝主導
+            # 2. 標準深蹲條件：膝關節與髖關節皆有實質屈曲 (knee < 148° 且 hip < 155°)
+            # 3. 淺蹲/下蹲不足但有顯著位移：(knee < 162° 且 hip < 162° 且 prom >= 45px)
+            is_valid_bottom = (
+                (prom_b >= 75.0 and knee_a < 155.0) or
+                (knee_a < 148.0 and hip_a < 155.0) or
+                (knee_a < 162.0 and hip_a < 162.0 and prom_b >= 45.0)
+            )
             if is_valid_bottom:
                 bottoms.append(b)
         

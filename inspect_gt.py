@@ -19,11 +19,11 @@ def check_json(filepath):
         print(f"=== {filepath} DOES NOT EXIST ===")
         return None
 
-print("1. Checking Ground Truth: C:\\squat\\squat_dataset2_0706\\S83_S108.json")
-gt_data = check_json(r"C:\squat\squat_dataset2_0706\S83_S108.json")
+print("1. Checking Ground Truth: D:\\squat_dataset\\S01_S108.json")
+gt_data = check_json(r"D:\squat_dataset\S01_S108.json")
 
-print("\n2. Checking Global Pred Segments: C:\\squat\\squat_dataset2_0706\\segments.json")
-pred_data = check_json(r"C:\squat\squat_dataset2_0706\segments.json")
+print("\n2. Checking Global Pred Segments: D:\\squat_dataset\\segments.json")
+pred_data = check_json(r"D:\squat_dataset\segments.json")
 
-rec_segments = glob.glob(r"C:\squat\squat_dataset2_0706\**\segments.json", recursive=True)
+rec_segments = glob.glob(r"D:\squat_dataset\**\segments.json", recursive=True)
 print(f"\n3. Found {len(rec_segments)} subfolder segments.json files.")

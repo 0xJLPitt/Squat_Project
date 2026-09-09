@@ -272,6 +272,16 @@ def evaluate_by_action_types(gt_records, pred_full, pred_rec, fps=30, exclude_li
             "recording_20260611_153424",  # S108
             "recording_20260611_153127",  # S108
             "recording_20260511_133807",  # S084
+            "recording_20251203_111026",  # S016
+            "recording_20251125_102222",  # S008
+            "recording_20260205_112900",  # S027
+            "recording_20260325_154346",  # S049
+            "recording_20260420_132533",  # S060
+            "recording_20260427_144840",  # S068
+            "recording_20260507_164157",  # S042
+            "recording_20260311_164032",  # S039
+            "recording_20260406_104653",  # S054
+            "recording_20260504_113752",  # S077
         ]
 
     # 去重 GT 錄影 (避免 rec_name 與 full_key 重複計算)
@@ -428,7 +438,7 @@ def plot_error_comparison_chart(df_summary, output_fig_path):
 
     plt.xlabel('動作類別 (Squat Movement / Error Category) [附帶：總下數]', fontsize=12, fontweight='bold', labelpad=12)
     plt.ylabel('平均相差幀數 (Frames, at 30fps)', fontsize=12, fontweight='bold')
-    plt.title('深蹲自動切割演算法 vs. Ground Truth 各動作類別誤差與下數比較 (S83 ~ S108)', fontsize=14, fontweight='bold', pad=15)
+    plt.title('深蹲自動切割演算法 vs. Ground Truth 各動作類別誤差與下數比較', fontsize=14, fontweight='bold', pad=15)
     
     plt.xticks(x, labels, fontsize=10.5, fontweight='medium')
     plt.legend(loc='upper right', fontsize=11, frameon=True, framealpha=0.9)
@@ -451,14 +461,14 @@ def plot_error_comparison_chart(df_summary, output_fig_path):
 
 def main():
     parser = argparse.ArgumentParser(description="分動作類別評估深蹲切片演算法誤差與下數統計")
-    parser.add_argument("--dataset", type=str, default=r"C:\squat\squat_dataset2_0706", help="資料集路徑")
-    parser.add_argument("--gt", type=str, default=r"C:\squat\squat_dataset2_0706\S83_S108.json", help="Ground Truth JSON 路徑")
+    parser.add_argument("--dataset", type=str, default=r"D:\squat_dataset", help="資料集路徑")
+    parser.add_argument("--gt", type=str, default=r"D:\squat_dataset\S01_S108.json", help="Ground Truth JSON 路徑")
     parser.add_argument("--fps", type=int, default=30, help="影片幀率")
-    parser.add_argument("--out_dir", type=str, default=r"C:\squat\squat_dataset2_0706", help="輸出報告資料夾")
+    parser.add_argument("--out_dir", type=str, default=r"D:\squat_dataset", help="輸出報告資料夾")
     args = parser.parse_args()
 
     print("=" * 80)
-    print(" S83~S108 各動作類別 (正常/錯誤) 切割演算法誤差與下數統計評估")
+    print(" 各動作類別 (正常/錯誤) 切割演算法誤差與下數統計評估")
     print(f" GT JSON : {args.gt}")
     print(f" Dataset : {args.dataset}")
     print("=" * 80)

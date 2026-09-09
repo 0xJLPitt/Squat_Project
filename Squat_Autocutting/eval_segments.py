@@ -169,7 +169,7 @@ def load_all_predictions(dataset_dir):
     return pred_full, pred_rec
 
 def evaluate_segmentation(gt_full, gt_rec, pred_full, pred_rec, fps=30):
-    """計算每個錄影 S83~S108 包含的 10 次 start_frame 平均與 10 次 end_frame 平均相差"""
+    """計算每個錄影包含的各次 start_frame 平均與 end_frame 平均相差"""
     detailed_records = []
     recording_summaries = []
     matched_pairs = []
@@ -193,6 +193,17 @@ def evaluate_segmentation(gt_full, gt_rec, pred_full, pred_rec, fps=30):
         "recording_20260611_153424",  # S108
         "recording_20260611_153127",  # S108
         "recording_20260511_133807",  # S084
+        "recording_20251203_111026",  # S016
+        "recording_20251125_102222",  # S008
+        "recording_20260205_112900",  # S027
+        "recording_20260325_154346",  # S049
+        "recording_20260420_132533",  # S060
+        "recording_20260427_144840",  # S068
+        "recording_20260507_164157",  # S042
+        "recording_20260311_164032",  # S039
+        "recording_20260406_104653",  # S054
+        "recording_20260504_113752",  # S077
+        "recording_20251126_120959",  # S010
     ]
 
     # 過濾排除指定之錄影
@@ -269,8 +280,7 @@ def evaluate_segmentation(gt_full, gt_rec, pred_full, pred_rec, fps=30):
 
 def plot_single_chart_all_recordings(df_summary, output_fig_path):
     """
-    將 S83 到 S108 所有錄影 (218 個錄影片段) 獨立計算出來的 10 個 start_frame 相差平均
-    與 10 個 end_frame 相差平均，呈現為一張寬幅清晰圖表。
+    將所有錄影獨立計算出來的 start_frame 相差平均與 end_frame 相差平均，呈現為一張寬幅清晰圖表。
     """
     if df_summary.empty:
         print("[WARNING] 無可用數據繪製圖表")
@@ -298,9 +308,9 @@ def plot_single_chart_all_recordings(df_summary, output_fig_path):
     plt.axhline(global_end_mean, color='#2980b9', linestyle='--', linewidth=2, label=f'Overall End Mean ({global_end_mean:.2f} frames)')
     
     # 設定標籤與標題
-    plt.xlabel('Recording Session (S83 ~ S108)', fontsize=12, fontweight='bold', labelpad=10)
+    plt.xlabel('Recording Session', fontsize=12, fontweight='bold', labelpad=10)
     plt.ylabel('Mean Frame Difference (Frames)', fontsize=12, fontweight='bold')
-    plt.title(f'Squat Autocutting Performance: 10-Rep Start & End Frame Mean Error across All {num_recs} Recordings (S83 ~ S108)', fontsize=14, fontweight='bold', pad=15)
+    plt.title(f'Squat Autocutting Performance: Start & End Frame Mean Error across All {num_recs} Recordings', fontsize=14, fontweight='bold', pad=15)
     
     # 設定 X 軸刻度標籤
     labels = df_summary['recording'].tolist()
@@ -312,7 +322,7 @@ def plot_single_chart_all_recordings(df_summary, output_fig_path):
     
     try:
         plt.savefig(output_fig_path)
-        print(f"\n[SUCCESS] 已為您產出涵蓋 S83~S108 所有 {num_recs} 個錄影的獨立平均相差圖表:")
+        print(f"\n[SUCCESS] 已為您產出涵蓋所有 {num_recs} 個錄影的獨立平均相差圖表:")
         print(f"👉 {output_fig_path}")
     except (OSError, PermissionError) as e:
         print(f"\n[WARNING] 無法寫入至 {output_fig_path} ({e})")
@@ -328,8 +338,8 @@ def plot_single_chart_all_recordings(df_summary, output_fig_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Squat Segmentation Evaluation Tool")
-    parser.add_argument("--dataset", type=str, default=r"C:\squat\squat_dataset2_0706", help="資料集路徑")
-    parser.add_argument("--gt", type=str, default=r"C:\squat\squat_dataset2_0706\S83_S108.json", help="Ground Truth JSON 路徑")
+    parser.add_argument("--dataset", type=str, default=r"D:\squat_dataset", help="資料集路徑")
+    parser.add_argument("--gt", type=str, default=r"D:\squat_dataset\S01_S108.json", help="Ground Truth JSON 路徑")
     parser.add_argument("--fps", type=int, default=30, help="影片 Frame Rate")
     args = parser.parse_args()
 
@@ -387,7 +397,7 @@ def main():
     print(f"\n[INFO] 詳細 CSV 已匯出: {csv_details_path}")
     print(f"[INFO] 各錄影平均相差 CSV 已匯出: {csv_summary_path}")
 
-    # 專門產出使用者指定的【單一張】包含 S83~S108 所有錄影獨立平均相差的圖表
+    # 專門產出使用者指定的【單一張】包含所有錄影獨立平均相差的圖表
     fig_path = os.path.join(args.dataset, "all_recordings_mean_differences.png")
     plot_single_chart_all_recordings(df_summary, fig_path)
 
