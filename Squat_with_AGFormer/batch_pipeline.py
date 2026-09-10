@@ -1,19 +1,32 @@
 r"""
 Batch Video Processing Pipeline: YOLO 2D Pose -> H36M Keypoints -> MotionAGFormer 3D Pose
-支援：
-1. YOLO 2D 骨架辨識與 COCO 格式儲存 (yolo_skeleton.txt)
+支援流程：
+1. YOLO 2D 骨架辨識與 COCO 格式儲存 (yolo_skeleton.txt, skeleton_<video_stem>.txt)
 2. 時序內插補齊與 Human3.6M 格式轉換 (keypoints.npz)
 3. MotionAGFormer 3D 姿態提升 (keypoints_3d.npz)
 4. 2D 骨架誤差與 3D 抖動診斷分析 (compare_2d_3d_angles.png, 2d_jitter_analysis.png, 2d_quality_report.txt)
 5. 2D 骨架影片疊圖輸出 (<video_stem>_2d_overlay.mp4)
 6. 3D 骨架重新投射回原影片疊圖輸出 (<video_stem>_3d_overlay.mp4)
 7. 3D 空間立體骨架動作動畫影片輸出 (<video_stem>_visualize_3d.mp4)
+
+呼叫範例:
+  1. 完整管線處理 (單一影片):
+     python batch_pipeline.py -v "D:\path\to\video.mp4"
+  2. 完整管線處理 (資料夾內所有影片):
+     python batch_pipeline.py -d "D:\path\to\folder"
+  3. 關鍵字過濾或強制覆蓋重跑:
+     python batch_pipeline.py -d "D:\path\to\folder" -p REC --overwrite
+  4. 互動模式 (直接按 Enter 選擇預設值):
+     python batch_pipeline.py
 """
+
 import os
 import sys
 import glob
 import copy
+import shutil
 import argparse
+from pathlib import Path
 import numpy as np
 import cv2
 import torch
@@ -24,41 +37,78 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 # Ensure current directory and tools are in sys.path
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
 # Add MotionAGFormer to sys.path
-MOTION_AGFORMER_PATH = r"D:\Pitt\Project\tools\MotionAGFormer"
-if MOTION_AGFORMER_PATH not in sys.path:
-    sys.path.append(MOTION_AGFORMER_PATH)
+CANDIDATE_AGFORMER_PATHS = [
+    r"D:\Pitt\Project\tools\MotionAGFormer",
+    os.path.join(CURRENT_DIR, "..", "tools", "MotionAGFormer"),
+    os.path.join(CURRENT_DIR, "MotionAGFormer")
+]
+for p in CANDIDATE_AGFORMER_PATHS:
+    if os.path.exists(p) and p not in sys.path:
+        sys.path.append(p)
 
 try:
     from demo.lib.utils import normalize_screen_coordinates, camera_to_world
     from model.MotionAGFormer import MotionAGFormer
 except ImportError as e:
-    print(f"[Warning] Failed to import MotionAGFormer modules directly: {e}")
+    print(f"[Warning] Failed to import MotionAGFormer modules: {e}")
 
-try:
-    from tools.overlay_2d import overlay_2d
-except ImportError:
-    try:
-        from overlay_2d import overlay_2d
-    except ImportError:
-        overlay_2d = None
+# 預設模型備選路徑
+DEFAULT_YOLO_CANDIDATES = [
+    r"E:\squat\recordings_20260507_done\yolo11\yolo11x-pose.pt",
+    r"E:\squat\recordings_20260507_0628_fixed棋盤格\yolo11\yolo11x-pose.pt",
+    "yolo11x-pose.pt"
+]
+
+DEFAULT_AGFORMER_CANDIDATES = [
+    r"D:\Pitt\Project\tools\MotionAGFormer\checkpoint\motionagformer-b-h36m.pth.tr",
+    os.path.join(CURRENT_DIR, "..", "tools", "MotionAGFormer", "checkpoint", "motionagformer-b-h36m.pth.tr"),
+    r"checkpoint\motionagformer-b-h36m.pth.tr"
+]
+
+def resolve_model_path(candidates, specified_path=None):
+    """取得存在的模型權重路徑"""
+    if specified_path and os.path.exists(specified_path):
+        return specified_path
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return specified_path if specified_path else candidates[0]
 
 
 # ==============================================================================
 # 1. YOLO 2D Pose Estimation
 # ==============================================================================
 
-def run_yolo_pose(video_path, output_txt, model, conf_thresh=0.25):
+def run_yolo_pose(video_path, output_txt, model, conf_thresh=0.25, overwrite=False, compat_txts=None):
     """
     Run YOLO Pose on the video and output keypoints to txt file.
     Format: frame_idx, joint_idx, x, y, conf
     """
-    cap = cv2.VideoCapture(video_path)
+    if not overwrite and os.path.exists(output_txt) and os.path.getsize(output_txt) > 0:
+        print(f"  [YOLO SKIP] 骨架檔案已存在，略過推論: {output_txt}")
+        if compat_txts:
+            for c_txt in compat_txts:
+                if not os.path.exists(c_txt):
+                    try:
+                        shutil.copyfile(output_txt, c_txt)
+                    except Exception:
+                        pass
+        return
+
+    cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
 
@@ -69,7 +119,9 @@ def run_yolo_pose(video_path, output_txt, model, conf_thresh=0.25):
     print(f"  [YOLO] Video: {os.path.basename(video_path)} | Size: {w}x{h} | FPS: {fps:.2f} | Frames: {total_frames}")
 
     frame_idx = 1
-    pbar = tqdm(total=total_frames, desc="  [YOLO Pose]", leave=False)
+    pbar = tqdm(total=total_frames if total_frames > 0 else None, desc="  [YOLO Pose]", leave=False)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_txt)), exist_ok=True)
 
     with open(output_txt, 'w', encoding='utf-8') as f:
         while True:
@@ -79,18 +131,17 @@ def run_yolo_pose(video_path, output_txt, model, conf_thresh=0.25):
 
             results = model(frame, verbose=False, conf=conf_thresh)
 
-            best_person_idx = -1
-            max_box_area = -1.0
-
-            if len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
+            # 選取最大 bounding box 的人物 (避免抓到背景旁觀者)
+            best_person_idx = 0
+            if len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 1:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
-                for p_i, box in enumerate(boxes):
-                    area = (box[2] - box[0]) * (box[3] - box[1])
-                    if area > max_box_area:
-                        max_box_area = area
-                        best_person_idx = p_i
+                areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+                best_person_idx = int(np.argmax(areas))
 
-            if best_person_idx >= 0 and results[0].keypoints is not None and len(results[0].keypoints.xy) > best_person_idx:
+            if (len(results) > 0 and 
+                results[0].keypoints is not None and 
+                len(results[0].keypoints.xy) > best_person_idx):
+                
                 kpts = results[0].keypoints.xy[best_person_idx].cpu().numpy()
                 confs = results[0].keypoints.conf[best_person_idx].cpu().numpy() if results[0].keypoints.conf is not None else np.ones(len(kpts))
                 for j_idx, ((x, y), conf) in enumerate(zip(kpts, confs)):
@@ -104,6 +155,16 @@ def run_yolo_pose(video_path, output_txt, model, conf_thresh=0.25):
 
     pbar.close()
     cap.release()
+
+    # 同步複製到相容路徑 (例如 skeleton_{stem}.txt)
+    if compat_txts:
+        for c_txt in compat_txts:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(c_txt)), exist_ok=True)
+                shutil.copyfile(output_txt, c_txt)
+            except Exception:
+                pass
+
     print(f"  [YOLO] Finished! Saved keypoints to {output_txt}")
 
 
@@ -185,8 +246,12 @@ def coco_to_h36m(keypoints):
     return new_keypoints
 
 
-def convert_txt_to_npz(txt_path, output_npz_path):
+def convert_txt_to_npz(txt_path, output_npz_path, overwrite=False):
     """Load YOLO keypoints txt, interpolate, convert to H36M format, and save npz."""
+    if not overwrite and os.path.exists(output_npz_path) and os.path.getsize(output_npz_path) > 0:
+        print(f"  [Convert SKIP] H36M 2D keypoints 已存在，略過轉換: {output_npz_path}")
+        return
+
     raw_lines = []
     with open(txt_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -216,6 +281,7 @@ def convert_txt_to_npz(txt_path, output_npz_path):
     h36m_kpts = coco_to_h36m(coco_kpts)
     final_input = np.expand_dims(h36m_kpts, axis=0) # (1, N_frames, 17, 3)
 
+    os.makedirs(os.path.dirname(os.path.abspath(output_npz_path)), exist_ok=True)
     np.savez_compressed(output_npz_path, reconstruction=final_input)
     print(f"  [Convert] Converted H36M 2D keypoints saved to {output_npz_path} (Shape: {final_input.shape})")
 
@@ -273,26 +339,45 @@ def load_agformer_model(checkpoint_path):
     args.use_tcn, args.graph_only = False, False
     args.n_frames = 243
 
-    model = nn.DataParallel(MotionAGFormer(**vars(args))).cuda()
-    pre_dict = torch.load(checkpoint_path, weights_only=False)
-    model.load_state_dict(pre_dict['model'], strict=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = MotionAGFormer(**vars(args)).to(device)
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+
+    pre_dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = pre_dict.get('model', pre_dict)
+    cleaned_dict = {}
+    for k, v in state_dict.items():
+        name = k.replace("module.", "")
+        cleaned_dict[name] = v
+
+    if isinstance(model, nn.DataParallel):
+        model.module.load_state_dict(cleaned_dict, strict=True)
+    else:
+        model.load_state_dict(cleaned_dict, strict=True)
+
     model.eval()
     return model
 
 
-def infer_agformer_3d(npz_2d_file, output_3d_file, model, w, h):
+def infer_agformer_3d(npz_2d_file, output_3d_file, model, w, h, overwrite=False):
+    if not overwrite and os.path.exists(output_3d_file) and os.path.getsize(output_3d_file) > 0:
+        print(f"  [AGFormer 3D SKIP] 3D keypoints 已存在，略過推論: {output_3d_file}")
+        return
+
     data = np.load(npz_2d_file, allow_pickle=True)
     keypoints = data['reconstruction']
     
     clips, downsample = turn_into_clips(keypoints)
     output_3D_all = []
+    device = next(model.parameters()).device
 
     for idx, clip in enumerate(clips):
         input_2D = normalize_screen_coordinates(clip, w=w, h=h)
         input_2D_aug = flip_data(input_2D)
         
-        input_2D = torch.from_numpy(input_2D.astype('float32')).cuda()
-        input_2D_aug = torch.from_numpy(input_2D_aug.astype('float32')).cuda()
+        input_2D = torch.from_numpy(input_2D.astype('float32')).to(device)
+        input_2D_aug = torch.from_numpy(input_2D_aug.astype('float32')).to(device)
 
         with torch.no_grad():
             output_3D_non_flip = model(input_2D) 
@@ -314,12 +399,13 @@ def infer_agformer_3d(npz_2d_file, output_3d_file, model, w, h):
         output_3D_all.append(post_out_all)
 
     final_3D = np.concatenate(output_3D_all, axis=0)
+    os.makedirs(os.path.dirname(os.path.abspath(output_3d_file)), exist_ok=True)
     np.savez_compressed(output_3d_file, reconstruction=final_3D)
     print(f"  [AGFormer 3D] Done! 3D keypoints saved to {output_3d_file} (Shape: {final_3D.shape})")
 
 
 # ==============================================================================
-# 4. Angle Calculation Helper
+# 4. Angle Calculation & Diagnostic Plot & Quality Report
 # ==============================================================================
 
 def calculate_angle(a, b, c):
@@ -337,17 +423,17 @@ def calculate_angle(a, b, c):
     return np.degrees(angle)
 
 
-# ==============================================================================
-# 5. 2D vs 3D Diagnostic Plot & Quality Report
-# ==============================================================================
-
-def diagnose_and_plot(txt_path, npz_2d_path, npz_3d_path, out_angle_plot, out_jitter_plot, out_report):
+def diagnose_and_plot(txt_path, npz_2d_path, npz_3d_path, out_angle_plot, out_jitter_plot, out_report, overwrite=False):
     """
     Generate comprehensive diagnostics for 2D errors vs 3D jitter:
     1. Angle Comparison Plot (Raw 2D YOLO vs Interpolated 2D H36M vs 3D AGFormer)
     2. 2D Joint Jitter / Velocity Plot
     3. Text Quality & Error Report
     """
+    if not overwrite and os.path.exists(out_angle_plot) and os.path.exists(out_jitter_plot) and os.path.exists(out_report):
+        print(f"  [Diagnostic SKIP] 診斷圖表已存在，略過產生。")
+        return
+
     raw_lines = []
     with open(txt_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -491,15 +577,19 @@ def diagnose_and_plot(txt_path, npz_2d_path, npz_3d_path, out_angle_plot, out_ji
 
 
 # ==============================================================================
-# 6. 2D Overlay Video Generation (<stem>_2d_overlay.mp4)
+# 5. 2D & 3D Video Overlays
 # ==============================================================================
 
-def create_2d_overlay_video(video_path, txt_path, out_video_path):
+def create_2d_overlay_video(video_path, txt_path, out_video_path, overwrite=False):
     """
     Project 2D skeleton onto raw video with angles HUD and joint indicators.
     Saved as <video_stem>_2d_overlay.mp4.
     """
-    cap = cv2.VideoCapture(video_path)
+    if not overwrite and os.path.exists(out_video_path) and os.path.getsize(out_video_path) > 0:
+        print(f"  [2D Video SKIP] 2D Overlay 影片已存在: {out_video_path}")
+        return
+
+    cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         return
 
@@ -535,7 +625,7 @@ def create_2d_overlay_video(video_path, txt_path, out_video_path):
 
     frame_idx = 0
     font = cv2.FONT_HERSHEY_SIMPLEX
-    pbar = tqdm(total=total_frames, desc="  [2D Overlay Video]", leave=False)
+    pbar = tqdm(total=total_frames if total_frames > 0 else None, desc="  [2D Overlay Video]", leave=False)
 
     while True:
         ret, frame = cap.read()
@@ -553,7 +643,7 @@ def create_2d_overlay_video(video_path, txt_path, out_video_path):
                     x1, y1, c1 = kpts[pt1]
                     x2, y2, c2 = kpts[pt2]
                     if x1 > 0 and y1 > 0 and x2 > 0 and y2 > 0:
-                        line_color = (0, 0, 255) if (pt1 % 2 != 0 and pt2 % 2 != 0) else ((255, 120, 0) if (pt1 % 2 == 0 and pt2 % 2 == 0 and pt1 != 0 and pt2 != 0) else (0, 220, 220))
+                        line_color = (0, 0, 255) if (pt1 % 2 != 0 and pt2 % 2 != 0) else ((255, 180, 0) if (pt1 % 2 == 0 and pt2 % 2 == 0 and pt1 != 0 and pt2 != 0) else (0, 220, 220))
                         cv2.line(frame, (x1, y1), (x2, y2), line_color, 3, cv2.LINE_AA)
 
             # Draw joints
@@ -598,10 +688,10 @@ def create_2d_overlay_video(video_path, txt_path, out_video_path):
         r_h_txt = f"Right Hip : {r_hip_ang:.1f} deg" if r_hip_ang > 0 else "Right Hip : N/A"
         l_h_txt = f"Left Hip  : {l_hip_ang:.1f} deg" if l_hip_ang > 0 else "Left Hip  : N/A"
 
-        cv2.putText(frame, r_txt, (35, 78), font, 0.65, (255, 120, 0), 2, cv2.LINE_AA)
-        cv2.putText(frame, l_txt, (35, 104), font, 0.65, (0, 0, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, r_h_txt, (35, 130), font, 0.65, (255, 200, 100), 2, cv2.LINE_AA)
-        cv2.putText(frame, l_h_txt, (35, 156), font, 0.65, (100, 100, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, r_txt, (35, 78), font, 0.65, (0, 120, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, l_txt, (35, 104), font, 0.65, (255, 180, 0), 2, cv2.LINE_AA)
+        cv2.putText(frame, r_h_txt, (35, 130), font, 0.65, (100, 180, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, l_h_txt, (35, 156), font, 0.65, (255, 220, 100), 2, cv2.LINE_AA)
 
         out.write(frame)
         frame_idx += 1
@@ -613,16 +703,16 @@ def create_2d_overlay_video(video_path, txt_path, out_video_path):
     print(f"  [2D Video] Saved 2D overlay to: {out_video_path}")
 
 
-# ==============================================================================
-# 7. 3D Reprojected Overlay Video Generation (<stem>_3d_overlay.mp4)
-# ==============================================================================
-
-def create_3d_reprojected_overlay_video(video_path, npz_2d_path, npz_3d_path, out_video_path):
+def create_3d_reprojected_overlay_video(video_path, npz_2d_path, npz_3d_path, out_video_path, overwrite=False):
     """
     Project the 3D reconstructed skeleton BACK onto the original video frames.
     Saved as <video_stem>_3d_overlay.mp4.
     """
-    cap = cv2.VideoCapture(video_path)
+    if not overwrite and os.path.exists(out_video_path) and os.path.getsize(out_video_path) > 0:
+        print(f"  [3D Video SKIP] 3D Reprojected Overlay 影片已存在: {out_video_path}")
+        return
+
+    cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         return
 
@@ -643,9 +733,6 @@ def create_3d_reprojected_overlay_video(video_path, npz_2d_path, npz_3d_path, ou
 
     n_frames = min(len(k3d), len(k2d), total_frames)
 
-    # Human3.6M skeleton connections:
-    # 0:Pelvis, 1:RHip, 2:RKnee, 3:RAnkle, 4:LHip, 5:LKnee, 6:LAnkle,
-    # 7:Spine, 8:Thorax, 9:Nose, 10:HeadTop, 11:LShoulder, 12:LElbow, 13:LWrist, 14:RShoulder, 15:RElbow, 16:RWrist
     I = [0, 0, 1, 4, 2, 5, 0, 7,  8,  8, 14, 15, 11, 12, 8,  9]
     J = [1, 4, 2, 5, 3, 6, 7, 8, 14, 11, 15, 16, 12, 13, 9, 10]
     LR = np.array([0, 1, 0, 1, 0, 1, 0, 0, 0,   1,  0,  0,  1,  1, 0, 0], dtype=bool)
@@ -671,9 +758,9 @@ def create_3d_reprojected_overlay_video(video_path, npz_2d_path, npz_3d_path, ou
             p1 = (int(proj_x[I[i]]), int(proj_y[I[i]]))
             p2 = (int(proj_x[J[i]]), int(proj_y[J[i]]))
             
-            # Left = Blue/Cyan, Right = Red/Magenta, Torso = Yellow
+            # Left = Blue/Cyan, Right = Red, Torso = Yellow
             if LR[i]:
-                line_color = (255, 180, 0) # Cyan/Blue for left
+                line_color = (255, 180, 0) # Cyan for left
             elif not LR[i] and I[i] != 0 and I[i] != 7 and I[i] != 8:
                 line_color = (0, 0, 255)   # Red for right
             else:
@@ -714,15 +801,15 @@ def create_3d_reprojected_overlay_video(video_path, npz_2d_path, npz_3d_path, ou
     print(f"  [3D Video] Saved 3D reprojected overlay to: {out_video_path}")
 
 
-# ==============================================================================
-# 8. 3D Spatial Animation Video Generation (<stem>_visualize_3d.mp4)
-# ==============================================================================
-
-def create_visualize_3d_video(npz_3d_path, out_video_path, fps=30.0):
+def create_visualize_3d_video(npz_3d_path, out_video_path, fps=30.0, overwrite=False):
     """
     Render 3D skeleton keypoints into a 3D animated video in 3D coordinate space.
     Saved as <video_stem>_visualize_3d.mp4.
     """
+    if not overwrite and os.path.exists(out_video_path) and os.path.getsize(out_video_path) > 0:
+        print(f"  [3D Video SKIP] 3D 空間動畫已存在: {out_video_path}")
+        return
+
     data = np.load(npz_3d_path, allow_pickle=True)['reconstruction']
     if len(data.shape) == 4 and data.shape[0] == 1:
         data = data[0]
@@ -798,120 +885,270 @@ def create_visualize_3d_video(npz_3d_path, out_video_path, fps=30.0):
 # Main Pipeline Runner
 # ==============================================================================
 
-def process_all_videos(video_dir, yolo_model_path, agformer_ckpt_path, create_overlay=True):
-    print("=" * 80)
-    print(f"🎬 SQUAT 2D-to-3D Pipeline & 2D/3D Overlay Runner")
-    print(f"Target Directory: {video_dir}")
-    print(f"YOLO Model: {yolo_model_path}")
-    print(f"MotionAGFormer Weights: {agformer_ckpt_path}")
-    print("=" * 80)
-
-    # 1. Find all video files
-    video_extensions = ['*.MOV', '*.mov', '*.mp4', '*.MP4', '*.avi', '*.AVI']
-    video_files = []
-    for ext in video_extensions:
-        video_files.extend(glob.glob(os.path.join(video_dir, '**', ext), recursive=True))
-
-    video_files = sorted(list(set(video_files)))
-    # Exclude overlay/visualize outputs if already generated
-    video_files = [v for v in video_files if not '_overlay' in os.path.basename(v).lower() and not '_visualize' in os.path.basename(v).lower() and not '_2d_skeleton' in os.path.basename(v).lower()]
-
-    if not video_files:
-        print(f"❌ No video files found in {video_dir}")
+def process_all_videos(target_input, yolo_model_path=None, agformer_ckpt_path=None, 
+                       create_overlay=True, pattern=None, overwrite=False):
+    """
+    執行批次影片處理主流程。
+    支援單一影片檔或整個資料夾。
+    """
+    target_path = Path(target_input)
+    if not target_path.exists():
+        print(f"[ERROR] 目標路徑不存在: {target_input}")
         return
 
-    print(f"📹 Found {len(video_files)} videos to process:")
-    for i, v in enumerate(video_files, 1):
-        print(f"  {i}. {v}")
+    # 1. 取得所有待處理影片清單
+    video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv'}
+    exclude_tags = ['_overlay', '_visualize', '_projected', '_2d_skeleton']
+
+    if target_path.is_file():
+        video_files = [target_path]
+    else:
+        candidates = [f for f in target_path.rglob('*') if f.suffix.lower() in video_extensions]
+        video_files = [f for f in candidates if not any(tag in f.stem.lower() for tag in exclude_tags)]
+        if pattern:
+            video_files = [f for f in video_files if pattern.lower() in f.name.lower()]
+        video_files = sorted(video_files)
+
+    if not video_files:
+        print(f"[WARN] 在 {target_input} 中找不到符合條件的影片檔案 (過濾條件: pattern='{pattern}')。")
+        return
+
+    print("=" * 80)
+    print(f"🎬 SQUAT 2D-to-3D Pipeline & Overlay Runner")
+    print(f"目標對象: {target_input}")
+    print(f"包含影片: {len(video_files)} 個")
+    print(f"覆蓋模式: {'強制覆蓋 (Overwrite)' if overwrite else '自動跳過已完成項目 (Skip)'}")
     print("=" * 80)
 
-    # 2. Load models
-    print("\n📦 [1/2] Loading YOLO Pose Model...")
-    yolo_model = YOLO(yolo_model_path)
+    for idx, v in enumerate(video_files, 1):
+        print(f"  {idx}. {v.name}")
+    print("=" * 80 + "\n")
 
-    print("\n📦 [2/2] Loading MotionAGFormer 3D Model...")
-    agformer_model = load_agformer_model(agformer_ckpt_path)
-    print("✅ All models loaded successfully!\n")
+    # 2. 延遲載入模型
+    actual_yolo_path = resolve_model_path(DEFAULT_YOLO_CANDIDATES, yolo_model_path)
+    actual_agformer_path = resolve_model_path(DEFAULT_AGFORMER_CANDIDATES, agformer_ckpt_path)
 
-    # 3. Process each video
+    print(f"📦 [1/2] Loading YOLO Pose Model ({actual_yolo_path})...")
+    yolo_model = YOLO(actual_yolo_path)
+
+    print(f"📦 [2/2] Loading MotionAGFormer 3D Model ({actual_agformer_path})...")
+    agformer_model = load_agformer_model(actual_agformer_path)
+    print("✅ 所有模型載入成功！準備進入運算管線...\n")
+
+    # 3. 逐一處理每個影片
     for idx, vid_path in enumerate(video_files, 1):
-        vid_dir = os.path.dirname(vid_path)
-        vid_stem = os.path.splitext(os.path.basename(vid_path))[0]
+        vid_dir = vid_path.parent
+        vid_stem = vid_path.stem
         
-        # Create output directory for this video
-        out_dir = os.path.join(vid_dir, vid_stem)
-        os.makedirs(out_dir, exist_ok=True)
+        # 專屬輸出資料夾
+        out_dir = vid_dir / vid_stem
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        txt_out = os.path.join(out_dir, "yolo_skeleton.txt")
-        npz_2d_out = os.path.join(out_dir, "keypoints.npz")
-        npz_3d_out = os.path.join(out_dir, "keypoints_3d.npz")
+        txt_out = out_dir / "yolo_skeleton.txt"
+        compat_skeleton = out_dir / f"skeleton_{vid_stem}.txt"
+        compat_yolo = out_dir / f"yolo_skeleton_{vid_stem}.txt"
+
+        npz_2d_out = out_dir / "keypoints.npz"
+        npz_3d_out = out_dir / "keypoints_3d.npz"
         
-        # Output video naming rule
-        overlay_2d_out = os.path.join(out_dir, f"{vid_stem}_2d_overlay.mp4")
-        overlay_3d_out = os.path.join(out_dir, f"{vid_stem}_3d_overlay.mp4")
-        visualize_3d_out = os.path.join(out_dir, f"{vid_stem}_visualize_3d.mp4")
+        overlay_2d_out = out_dir / f"{vid_stem}_2d_overlay.mp4"
+        overlay_3d_out = out_dir / f"{vid_stem}_3d_overlay.mp4"
+        visualize_3d_out = out_dir / f"{vid_stem}_visualize_3d.mp4"
 
-        angle_plot_out = os.path.join(out_dir, "compare_2d_3d_angles.png")
-        jitter_plot_out = os.path.join(out_dir, "2d_jitter_analysis.png")
-        report_out = os.path.join(out_dir, "2d_quality_report.txt")
+        angle_plot_out = out_dir / "compare_2d_3d_angles.png"
+        jitter_plot_out = out_dir / "2d_jitter_analysis.png"
+        report_out = out_dir / "2d_quality_report.txt"
 
         print(f"\n=======================================================")
-        print(f"[{idx}/{len(video_files)}] Processing: {os.path.basename(vid_path)}")
+        print(f"[{idx}/{len(video_files)}] Processing: {vid_path.name}")
         print(f"Output Directory: {out_dir}")
         print(f"=======================================================")
 
-        # Step 1: YOLO Pose
+        # Step 1: YOLO Pose (產出 yolo_skeleton.txt 及 skeleton_{stem}.txt)
         print(f"\n▶ Step 1: YOLO 2D Pose Estimation...")
-        run_yolo_pose(vid_path, txt_out, yolo_model)
+        run_yolo_pose(
+            video_path=vid_path, 
+            output_txt=str(txt_out), 
+            model=yolo_model,
+            overwrite=overwrite,
+            compat_txts=[str(compat_skeleton), str(compat_yolo)]
+        )
 
-        # Step 2: Convert to H36M
+        # Step 2: Convert to H36M (產出 keypoints.npz)
         print(f"\n▶ Step 2: Converting COCO 17 to Human3.6M 2D Format...")
-        convert_txt_to_npz(txt_out, npz_2d_out)
+        convert_txt_to_npz(
+            txt_path=str(txt_out), 
+            output_npz_path=str(npz_2d_out),
+            overwrite=overwrite
+        )
 
-        # Step 3: AGFormer 3D Inference
+        # Step 3: AGFormer 3D Inference (產出 keypoints_3d.npz)
         print(f"\n▶ Step 3: MotionAGFormer 3D Pose Estimation...")
-        cap = cv2.VideoCapture(vid_path)
+        cap = cv2.VideoCapture(str(vid_path))
         w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
         h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps <= 0 or np.isnan(fps): fps = 30.0
         cap.release()
-        infer_agformer_3d(npz_2d_out, npz_3d_out, agformer_model, w=w, h=h)
+        infer_agformer_3d(
+            npz_2d_file=str(npz_2d_out), 
+            output_3d_file=str(npz_3d_out), 
+            model=agformer_model, 
+            w=w, h=h,
+            overwrite=overwrite
+        )
 
         # Step 4: 2D Quality & 3D Stability Diagnosis
         print(f"\n▶ Step 4: Generating 2D Error & 3D Jitter Diagnostic Charts...")
-        diagnose_and_plot(txt_out, npz_2d_out, npz_3d_out, angle_plot_out, jitter_plot_out, report_out)
+        diagnose_and_plot(
+            txt_path=str(txt_out), 
+            npz_2d_path=str(npz_2d_out), 
+            npz_3d_path=str(npz_3d_out), 
+            out_angle_plot=str(angle_plot_out), 
+            out_jitter_plot=str(jitter_plot_out), 
+            out_report=str(report_out),
+            overwrite=overwrite
+        )
 
         # Step 5: 2D & 3D Video Generation
         if create_overlay:
             print(f"\n▶ Step 5-1: Generating 2D Overlay Video ({vid_stem}_2d_overlay.mp4)...")
-            create_2d_overlay_video(vid_path, txt_out, overlay_2d_out)
+            create_2d_overlay_video(
+                video_path=str(vid_path), 
+                txt_path=str(txt_out), 
+                out_video_path=str(overlay_2d_out),
+                overwrite=overwrite
+            )
             
             print(f"\n▶ Step 5-2: Generating 3D Reprojected Overlay Video ({vid_stem}_3d_overlay.mp4)...")
-            create_3d_reprojected_overlay_video(vid_path, npz_2d_out, npz_3d_out, overlay_3d_out)
+            create_3d_reprojected_overlay_video(
+                video_path=str(vid_path), 
+                npz_2d_path=str(npz_2d_out), 
+                npz_3d_path=str(npz_3d_out), 
+                out_video_path=str(overlay_3d_out),
+                overwrite=overwrite
+            )
 
             print(f"\n▶ Step 5-3: Generating 3D Spatial Animation Video ({vid_stem}_visualize_3d.mp4)...")
-            create_visualize_3d_video(npz_3d_out, visualize_3d_out, fps=fps)
+            create_visualize_3d_video(
+                npz_3d_path=str(npz_3d_out), 
+                out_video_path=str(visualize_3d_out), 
+                fps=fps,
+                overwrite=overwrite
+            )
 
-        print(f"\n✨ Video {os.path.basename(vid_path)} completed successfully!")
+        print(f"\n✨ Video {vid_path.name} completed successfully!")
 
     print("\n" + "=" * 80)
-    print("🎉 ALL VIDEOS PROCESSED & VIDEOS GENERATED SUCCESSFULLY!")
+    print("🎉 ALL VIDEOS PROCESSED & PIPELINE COMPLETED SUCCESSFULLY!")
     print("=" * 80)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Batch process videos with YOLO Pose and MotionAGFormer with 2D/3D Diagnostics & Overlays")
-    parser.add_argument("--video_dir", type=str, default=r"D:\Pitt\Project\Squat_Project\video", help="Directory containing input videos")
-    parser.add_argument("--yolo_model", type=str, default=r"E:\squat\recordings_20260507_done\yolo11\yolo11x-pose.pt", help="Path to YOLO Pose weights")
-    parser.add_argument("--agformer_ckpt", type=str, default=r"D:\Pitt\Project\tools\MotionAGFormer\checkpoint\motionagformer-b-h36m.pth.tr", help="Path to MotionAGFormer weights")
-    parser.add_argument("--no_overlay", action="store_true", help="Skip generating 2D & 3D overlay videos")
-    
+def main():
+    parser = argparse.ArgumentParser(
+        description="Batch process videos with YOLO Pose and MotionAGFormer 3D with 2D/3D Diagnostics & Overlays"
+    )
+    parser.add_argument(
+        "input",
+        nargs="?",
+        default=None,
+        help="目標路徑 (可為單一影片檔或資料夾路徑)"
+    )
+    parser.add_argument(
+        "--video", "-v",
+        type=str,
+        default=None,
+        help="單一影片完整路徑"
+    )
+    parser.add_argument(
+        "--dir", "-d", "--video_dir",
+        dest="video_dir",
+        type=str,
+        default=None,
+        help="目標影片資料夾路徑"
+    )
+    parser.add_argument(
+        "--pattern", "-p",
+        type=str,
+        default=None,
+        help="檔名過濾關鍵字 (例如 REC 或 FL)"
+    )
+    parser.add_argument(
+        "--yolo_model",
+        type=str,
+        default=None,
+        help="YOLO Pose 模型權重路徑 (.pt)"
+    )
+    parser.add_argument(
+        "--agformer_ckpt",
+        type=str,
+        default=None,
+        help="MotionAGFormer 模型權重路徑 (.pth.tr)"
+    )
+    parser.add_argument(
+        "--no_overlay",
+        action="store_true",
+        default=False,
+        help="略過產生 2D/3D 疊圖影片 (加速處理)"
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        default=False,
+        help="若輸出檔案已存在是否強制覆蓋重跑"
+    )
+
     args = parser.parse_args()
 
+    # 決定目標輸入 (優先級: --video > --video_dir > positional input)
+    target_input = None
+    if args.video:
+        target_input = args.video
+    elif args.video_dir:
+        target_input = args.video_dir
+    elif args.input:
+        target_input = args.input
+
+    # 若有命令列參數直接執行
+    if target_input is not None:
+        process_all_videos(
+            target_input=target_input,
+            yolo_model_path=args.yolo_model,
+            agformer_ckpt_path=args.agformer_ckpt,
+            create_overlay=not args.no_overlay,
+            pattern=args.pattern,
+            overwrite=args.overwrite
+        )
+        return
+
+    # --- 互動模式 ---
+    default_path = r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\i15\sub1"
+    if not os.path.exists(default_path):
+        default_path = r"D:\Pitt\Project\Squat_Project\video"
+
+    print("=" * 70)
+    print("🎬 SQUAT 2D-to-3D Pipeline 互動模式")
+    print(f"預設處理目錄: {default_path}")
+    print("您可直接輸入「單一影片完整路徑」或「資料夾路徑」，按 Enter 使用預設路徑。")
+    print("=" * 70)
+
+    user_path = input("請輸入目標路徑 (直接按 Enter 使用預設目錄): ").strip()
+    target = user_path if user_path else default_path
+
+    pattern_in = input("請輸入檔名過濾關鍵字 (直接按 Enter 處理全部影片，例如 REC 或 FL): ").strip()
+    pattern = pattern_in if pattern_in else None
+
+    overlay_choice = input("是否產出 2D/3D 疊圖影片？(Y/n，預設是): ").strip().lower()
+    create_overlay = (overlay_choice != 'n')
+
     process_all_videos(
-        video_dir=args.video_dir,
+        target_input=target,
         yolo_model_path=args.yolo_model,
         agformer_ckpt_path=args.agformer_ckpt,
-        create_overlay=not args.no_overlay
+        create_overlay=create_overlay,
+        pattern=pattern,
+        overwrite=args.overwrite
     )
+
+if __name__ == "__main__":
+    main()
