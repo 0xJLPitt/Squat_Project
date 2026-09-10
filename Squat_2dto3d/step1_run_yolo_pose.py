@@ -4,17 +4,16 @@ r"""
   1. 支援批次處理整個資料夾內的影片。
   2. 支援指定完整路徑的單一影片。
   3. 檔名命名規則:
-     - 多個影片時: 輸出 skeleton_{影片名}.txt (並自動同步產出 yolo_skeleton_{影片名}.txt 以確保與後續 step2/step8/step9 相容)。
-     - 單一影片時: 預設輸出 yolo_skeleton.txt (並同步產出 skeleton_{影片名}.txt)。
+     - 統一輸出 yolo_skeleton 格式: yolo_skeleton_{影片名}.txt (單一檔案，乾淨不重複)。
   4. 支援命令列參數與無參數互動模式。
 
 呼叫範例:
   1. 跑整個資料夾:
-     python step1_run_yolo_pose.py -d "D:\Pitt\Project\Squat_Project\video\benchpress_3D\i15\sub1"
+     python step1_run_yolo_pose.py -d "D:\Pitt\Project\Squat_Project\video\benchpress_3D\i17\sub2"
   2. 跑單一影片 (完整路徑):
-     python step1_run_yolo_pose.py -v "D:\Pitt\Project\Squat_Project\video\benchpress_3D\i15\sub1\REC_12798D4D.MP4"
+     python step1_run_yolo_pose.py -v "D:\Pitt\Project\Squat_Project\video\benchpress_3D\i17\sub2\error1.MP4"
   3. 直接給路徑 (自動判斷影片或資料夾):
-     python step1_run_yolo_pose.py "D:\Pitt\Project\Squat_Project\video\benchpress_3D\i15\sub1"
+     python step1_run_yolo_pose.py "D:\Pitt\Project\Squat_Project\video\benchpress_3D\i17\sub2"
   4. 互動模式:
      python step1_run_yolo_pose.py
 """
@@ -218,19 +217,9 @@ def process_directory(directory_path, model_or_path, output_root=None, recursive
     for video in video_files:
         out_folder = Path(output_root) if output_root else video.parent
         name = video.stem
-
-        if is_multiple:
-            # 多個影片時: 依需求產出 skeleton_{name}.txt，並同步提供 yolo_skeleton_{name}.txt 相容檔
-            primary_txt = out_folder / f"skeleton_{name}.txt"
-            compat_txt = out_folder / f"yolo_skeleton_{name}.txt"
-            output_txts = [primary_txt, compat_txt]
-        else:
-            # 單一影片時: 預設 yolo_skeleton.txt，並同步產出 skeleton_{name}.txt
-            primary_txt = out_folder / "yolo_skeleton.txt"
-            compat_txt = out_folder / f"skeleton_{name}.txt"
-            output_txts = [primary_txt, compat_txt]
-
-        tasks.append((video, output_txts))
+        # 統一輸出 yolo_skeleton 格式: yolo_skeleton_{name}.txt
+        primary_txt = out_folder / f"yolo_skeleton_{name}.txt"
+        tasks.append((video, [primary_txt]))
 
     if not overwrite and all(all(p.exists() and p.stat().st_size > 0 for p in outs) for _, outs in tasks):
         print("[INFO] 所有影片骨架檔案皆已存在，略過模型載入與處理。若要重新產生請加上 --overwrite 參數。")
@@ -266,16 +255,10 @@ def process_single_video_entry(video_path, model_or_path, output_target=None, co
             output_txts = [out_target]
         else:
             # 指定了輸出目錄
-            primary_txt = out_target / "yolo_skeleton.txt"
-            compat_txt1 = out_target / f"skeleton_{name}.txt"
-            compat_txt2 = out_target / f"yolo_skeleton_{name}.txt"
-            output_txts = [primary_txt, compat_txt1, compat_txt2]
+            output_txts = [out_target / f"yolo_skeleton_{name}.txt"]
     else:
-        # 未指定輸出，預設存於該影片同目錄
-        primary_txt = video_path.parent / "yolo_skeleton.txt"
-        compat_txt1 = video_path.parent / f"skeleton_{name}.txt"
-        compat_txt2 = video_path.parent / f"yolo_skeleton_{name}.txt"
-        output_txts = [primary_txt, compat_txt1, compat_txt2]
+        # 未指定輸出，預設存於該影片同目錄下的 yolo_skeleton_{name}.txt
+        output_txts = [video_path.parent / f"yolo_skeleton_{name}.txt"]
 
     # 檢查是否已存在
     if not overwrite and all(p.exists() and p.stat().st_size > 0 for p in output_txts):

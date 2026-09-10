@@ -20,12 +20,15 @@ def main():
     ]
     
     for vid_name in videos:
+        # 優先尋找 yolo_skeleton_{vid_name}.txt，若無則相容 skeleton_{vid_name}.txt
         txt_path = os.path.join(DATA_DIR, f"yolo_skeleton_{vid_name}.txt")
+        if not os.path.exists(txt_path):
+            txt_path = os.path.join(DATA_DIR, f"skeleton_{vid_name}.txt")
         vid_path = os.path.join(DATA_DIR, f"{vid_name}.avi")
         out_path = os.path.join(DATA_DIR, f"{vid_name}_2d_overlay.mp4")
         
         if not os.path.exists(vid_path) or not os.path.exists(txt_path):
-            print(f"Skipping {vid_name}: Video or txt not found.")
+            print(f"Skipping {vid_name}: Video or txt not found ({txt_path}).")
             continue
             
         print(f"Loading 2D keypoints for {vid_name}...")

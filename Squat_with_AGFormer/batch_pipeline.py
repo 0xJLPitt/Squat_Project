@@ -1,7 +1,7 @@
 r"""
 Batch Video Processing Pipeline: YOLO 2D Pose -> H36M Keypoints -> MotionAGFormer 3D Pose
 支援流程：
-1. YOLO 2D 骨架辨識與 COCO 格式儲存 (yolo_skeleton.txt, skeleton_<video_stem>.txt)
+1. YOLO 2D 骨架辨識與 COCO 格式儲存 (yolo_skeleton.txt)
 2. 時序內插補齊與 Human3.6M 格式轉換 (keypoints.npz)
 3. MotionAGFormer 3D 姿態提升 (keypoints_3d.npz)
 4. 2D 骨架誤差與 3D 抖動診斷分析 (compare_2d_3d_angles.png, 2d_jitter_analysis.png, 2d_quality_report.txt)
@@ -944,9 +944,8 @@ def process_all_videos(target_input, yolo_model_path=None, agformer_ckpt_path=No
         out_dir = vid_dir / vid_stem
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # 骨架點檔案統一命名為 yolo_skeleton.txt (單一檔案，乾淨不重複)
         txt_out = out_dir / "yolo_skeleton.txt"
-        compat_skeleton = out_dir / f"skeleton_{vid_stem}.txt"
-        compat_yolo = out_dir / f"yolo_skeleton_{vid_stem}.txt"
 
         npz_2d_out = out_dir / "keypoints.npz"
         npz_3d_out = out_dir / "keypoints_3d.npz"
@@ -964,14 +963,14 @@ def process_all_videos(target_input, yolo_model_path=None, agformer_ckpt_path=No
         print(f"Output Directory: {out_dir}")
         print(f"=======================================================")
 
-        # Step 1: YOLO Pose (產出 yolo_skeleton.txt 及 skeleton_{stem}.txt)
+        # Step 1: YOLO Pose (產出單一 yolo_skeleton.txt)
         print(f"\n▶ Step 1: YOLO 2D Pose Estimation...")
         run_yolo_pose(
             video_path=vid_path, 
             output_txt=str(txt_out), 
             model=yolo_model,
             overwrite=overwrite,
-            compat_txts=[str(compat_skeleton), str(compat_yolo)]
+            compat_txts=None
         )
 
         # Step 2: Convert to H36M (產出 keypoints.npz)

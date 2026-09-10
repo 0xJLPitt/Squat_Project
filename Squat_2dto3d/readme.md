@@ -23,7 +23,7 @@ We use `vision2`, `vision3`, `vision4`, and `vision5` to perform 3D reconstructi
 
 ### step1_run_yolo_pose.py
 - **檔案目的**: 執行 YOLO11 Pose 姿態辨識，將影片中的人物轉換為 2D 骨架數據 (`.txt`)。
-- **支援功能**: 支援單一影片完整路徑 (`-v`) 或批次處理整個資料夾 (`-d`)。多影片時自動輸出 `skeleton_{影片名}.txt` (並同步生成 `yolo_skeleton_{影片名}.txt` 相容檔)；單影片時輸出 `yolo_skeleton.txt`。若未給參數會進入友善互動模式。
+- **支援功能**: 支援單一影片完整路徑 (`-v`) 或批次處理整個資料夾 (`-d`)。統一產出標準骨架檔案 `yolo_skeleton_{影片名}.txt` (每部影片僅產生一份，格式一致且乾淨不重複)。若未給參數會進入友善互動模式。
 - **注意**: 確保 YOLO 模型檔 (`.pt`) 路徑正確，且會消耗較多 GPU 資源。
 
 ### step2_draw_2d_on_video.py

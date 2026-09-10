@@ -68,9 +68,12 @@ def get_projection_matrices(intrinsics, extr):
 def load_2d_keypoints():
     kpts_2d = {}
     for cam, name in cams.items():
+        # 優先讀取 yolo_skeleton_{name}.txt，若無則相容 skeleton_{name}.txt
         txt_path = os.path.join(DATA_DIR, f"yolo_skeleton_{name}.txt")
         if not os.path.exists(txt_path):
-            raise FileNotFoundError(f"2D keypoints not found: {txt_path}")
+            txt_path = os.path.join(DATA_DIR, f"skeleton_{name}.txt")
+        if not os.path.exists(txt_path):
+            raise FileNotFoundError(f"2D keypoints not found: {os.path.join(DATA_DIR, f'yolo_skeleton_{name}.txt')}")
         
         data = np.loadtxt(txt_path, delimiter=',')
         # data format: frame(1-indexed), joint, x, y
