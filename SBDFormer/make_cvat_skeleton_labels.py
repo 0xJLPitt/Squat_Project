@@ -365,6 +365,12 @@ def main() -> int:
         default=None,
         help="只檢查指定的 raw labels JSON 是否合規，不產生檔案",
     )
+    parser.add_argument(
+        "--svg",
+        action="store_true",
+        default=False,
+        help="額外產生供瀏覽器預覽的 coco_person_skeleton.svg 示意圖檔 (預設不產生)",
+    )
     args = parser.parse_args()
 
     if args.check:
@@ -388,9 +394,10 @@ def main() -> int:
     raw_path.write_text(json.dumps(raw_labels, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"   💾 {raw_path.name}  (建立新 Task 時貼進 Labels -> Raw)")
 
-    svg_path = out_dir / "coco_person_skeleton.svg"
-    svg_path.write_text(build_preview_svg(), encoding="utf-8")
-    print(f"   💾 {svg_path.name}  (示意圖，可直接用瀏覽器開啟確認)")
+    if args.svg:
+        svg_path = out_dir / "coco_person_skeleton.svg"
+        svg_path.write_text(build_preview_svg(), encoding="utf-8")
+        print(f"   💾 {svg_path.name}  (示意圖，可直接用瀏覽器開啟確認)")
 
     print("-" * 78)
     print("✅ 完成！")

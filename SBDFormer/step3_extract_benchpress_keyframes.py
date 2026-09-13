@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 r"""
 ================================================================================
-臥推關鍵影格多視角批量擷取腳本 (Extract Bench Press Keyframes from Multi-Camera Videos)
+Step 3: 臥推多視角關鍵影格照片批次擷取腳本
+(Extract Bench Press Keyframes from Multi-Camera Videos)
 ================================================================================
 功能說明:
   1. 自動掃描指定目錄下所有視角資料夾 (如 sub1-i15, sub2-i16, sub2-i17) 中的影片。
@@ -22,16 +23,19 @@ r"""
 
 使用範例:
   1. 預設一鍵批次全跑 (自動抓出全部非 checkboard 影片的所有 Rep 1~n 關鍵影格):
-     $ mamba run -n hw1 python D:\Pitt\Project\Squat_Project\SBDFormer\extract_benchpress_keyframes.py
+     $ mamba run -n hw1 python step3_extract_benchpress_keyframes.py
 
-  2. 僅跑單一影片 (例如只抽取 error1 的全部 Rep):
-     $ python extract_benchpress_keyframes.py --video error1.MP4
+  2. 指定受試者母目錄:
+     $ mamba run -n hw1 python step3_extract_benchpress_keyframes.py --dir "D:\Pitt\Project\Squat_Project\video\benchpress_3D\subject\sub2"
 
-  3. 指定只抽取特定 Rep (例如只要第 1 組):
-     $ python extract_benchpress_keyframes.py --rep 1
+  3. 僅跑單一影片 (例如只抽取 error1 的全部 Rep):
+     $ mamba run -n hw1 python step3_extract_benchpress_keyframes.py --video error1.MP4
 
-  4. 自訂資料夾名稱不加後綴 (例如直接建立 error1/ 而非 error1_keyframes/):
-     $ python extract_benchpress_keyframes.py --no-suffix
+  4. 指定只抽取特定 Rep (例如只要第 1 組):
+     $ mamba run -n hw1 python step3_extract_benchpress_keyframes.py --rep 1
+
+  5. 抽幀完成後自動串聯執行 Step 4 打包 CVAT 標註資料集:
+     $ mamba run -n hw1 python step3_extract_benchpress_keyframes.py --export-cvat
 ================================================================================
 """
 
@@ -435,7 +439,7 @@ def main():
         "--export-cvat",
         action="store_true",
         default=False,
-        help="抽幀完成後自動調用 export_benchpress_cvat_labels.py 打包 CVAT 標註檔與照片 ZIP"
+        help="抽幀完成後自動調用 step4_export_benchpress_cvat_labels.py 打包 CVAT 標註檔與照片 ZIP"
     )
 
     args = parser.parse_args()
@@ -460,7 +464,10 @@ def main():
 
     if args.export_cvat:
         try:
-            from export_benchpress_cvat_labels import build_coco_keypoints_dataset
+            try:
+                from step4_export_benchpress_cvat_labels import build_coco_keypoints_dataset
+            except ImportError:
+                from export_benchpress_cvat_labels import build_coco_keypoints_dataset
             print("\n🚀 自動串聯執行 CVAT 標註資料集打包...")
             build_coco_keypoints_dataset(
                 base_dir=base_dir,

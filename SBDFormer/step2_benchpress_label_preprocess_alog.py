@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 r"""
 ================================================================================
-臥推動作標註預處理演算法 (Bench Press Label Preprocess Algorithm)
+Step 2: 臥推關鍵點判斷與動作切片預處理演算法
+(Bench Press Keypoints Kinematic Preprocess Algorithm)
 ================================================================================
 專門針對 YOLO 2D 骨架中的「左手手腕 (Left Wrist, COCO Index 9)」進行運動學特徵分析，
 自動精準擷取每次臥推動作的 5 大關鍵影格 (Keyframes)：
@@ -15,14 +16,14 @@ r"""
 --------------------------------------------------------------------------------
 📖 使用方法一：命令列 (CLI Terminal) 直接執行
 --------------------------------------------------------------------------------
-1. 預設執行 (自動讀取 normal.txt 並自動匯出 JSON、CSV 與視覺化檢查圖):
-   $ mamba run -n hw1 python D:\Pitt\Project\Squat_Project\SBDFormer\benchpress_label_preprocess_alog.py
+1. 受試者母目錄全自動批次處理 (推薦，自動分析 dataprocess 下所有骨架 txt):
+   $ mamba run -n hw1 python step2_benchpress_label_preprocess_alog.py --dir "D:\Pitt\Project\Squat_Project\video\benchpress_3D\subject\sub2"
 
-2. 指定特定受試者或動作骨架檔:
-   $ mamba run -n hw1 python D:\Pitt\Project\Squat_Project\SBDFormer\benchpress_label_preprocess_alog.py --input "D:\Pitt\Project\Squat_Project\video\benchpress_3D\i17\sub2\yolo_skeleton_error1.txt"
+2. 指定單一骨架檔測試:
+   $ mamba run -n hw1 python step2_benchpress_label_preprocess_alog.py --input "D:\Pitt\Project\Squat_Project\video\benchpress_3D\subject\sub2\dataprocess\yolo_skeleton_error1.txt"
 
 3. 自訂輸出路徑與影格率:
-   $ mamba run -n hw1 python benchpress_label_preprocess_alog.py \
+   $ mamba run -n hw1 python step2_benchpress_label_preprocess_alog.py \
        --input "path/to/yolo_skeleton.txt" \
        --output-json "path/to/output.json" \
        --output-csv "path/to/output.csv" \
@@ -33,10 +34,10 @@ r"""
 💻 使用方法二：Python 腳本匯入呼叫 (Python API)
 --------------------------------------------------------------------------------
 【寫法 A：一鍵高階 API 函式 (推薦)】
-    from benchpress_label_preprocess_alog import extract_benchpress_key_frames
+    from step2_benchpress_label_preprocess_alog import extract_benchpress_key_frames
 
     reps = extract_benchpress_key_frames(
-        txt_path=r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\i17\sub2\yolo_skeleton_normal.txt",
+        txt_path=r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\subject\sub2\dataprocess\yolo_skeleton_normal.txt",
         output_json="benchpress_segments.json",  # 選填，設為 None 則不存
         output_csv="benchpress_segments.csv",    # 選填
         plot_path="benchpress_plot.png",         # 選填
@@ -48,10 +49,10 @@ r"""
         print(f"Rep {rep['rep']}: Top={rep['top_start_frame']}, Bottom={rep['bottom_frame']}")
 
 【寫法 B：物件導向客製化呼叫 (支援進階調整與取得 DataFrame)】
-    from benchpress_label_preprocess_alog import BenchpressWristAnalyzer
+    from step2_benchpress_label_preprocess_alog import BenchpressWristAnalyzer
 
     analyzer = BenchpressWristAnalyzer(fps=30.0, min_prominence=35.0)
-    analyzer.load_skeleton_file(r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\i17\sub2\yolo_skeleton_normal.txt")
+    analyzer.load_skeleton_file(r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\subject\sub2\dataprocess\yolo_skeleton_normal.txt")
     analyzer.preprocess_left_wrist()
     reps = analyzer.extract_keyframes()
 
@@ -68,9 +69,9 @@ r"""
     ENABLE_SAVE_PLOT = False   # 設為 False 即可關閉 *_segmentation.png 產出
 
 【方法二：在命令列執行時加入關閉參數】
-  $ mamba run -n hw1 python benchpress_label_preprocess_alog.py --no-csv
-  $ mamba run -n hw1 python benchpress_label_preprocess_alog.py --no-plot
-  $ mamba run -n hw1 python benchpress_label_preprocess_alog.py --no-csv --no-plot
+  $ mamba run -n hw1 python step2_benchpress_label_preprocess_alog.py --no-csv
+  $ mamba run -n hw1 python step2_benchpress_label_preprocess_alog.py --no-plot
+  $ mamba run -n hw1 python step2_benchpress_label_preprocess_alog.py --no-csv --no-plot
 
 【方法三：在 Python API 呼叫時關閉】
   reps = extract_benchpress_key_frames(..., save_csv=False, save_plot=False)
