@@ -2,46 +2,32 @@ import os
 import pandas as pd
 import numpy as np
 import argparse
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import json
 from squat_analysis import SquatFeatureExtractor
 
 
 
-# 定義 COCO 與 MediaPipe 關鍵點索引對照表
-COCO_KEYPOINT_MAP = {
+# 定義 COCO 關鍵點索引對照表
+KEYPOINT_MAP = {
     5: 'left_shoulder', 6: 'right_shoulder',
     11: 'left_hip', 12: 'right_hip',
     13: 'left_knee', 14: 'right_knee',
     15: 'left_ankle', 16: 'right_ankle'
 }
 
-MEDIAPIPE_KEYPOINT_MAP = {
-    11: 'left_shoulder', 12: 'right_shoulder',
-    23: 'left_hip', 24: 'right_hip',
-    25: 'left_knee', 26: 'right_knee',
-    27: 'left_ankle', 28: 'right_ankle'
-}
-
 def load_pose_data(filepath):
-    """讀取 mediapipe_landmarks.txt 或 yolo_skeleton.txt 並轉換為 DataFrame"""
+    """讀取 mediapipe_landmarks.txt 並轉換為 DataFrame"""
     raw_data = pd.read_csv(filepath, header=None, names=['frame', 'idx', 'x', 'y'])
-    raw_data['idx'] = pd.to_numeric(raw_data['idx'], errors='coerce').fillna(-1).astype(int)
-    max_frame = int(raw_data['frame'].max())
-    
-    # 自動判定是 MediaPipe (33點, 含 index 23/25) 還是 COCO/YOLO (17點, 含 index 13/14)
-    has_mediapipe_idx = raw_data['idx'].isin([23, 25]).any()
-    keypoint_map = MEDIAPIPE_KEYPOINT_MAP if has_mediapipe_idx else COCO_KEYPOINT_MAP
+    max_frame = raw_data['frame'].max()
     
     columns = []
-    for name in COCO_KEYPOINT_MAP.values():
+    for name in KEYPOINT_MAP.values():
         columns.extend([f'{name}_x', f'{name}_y', f'{name}_confidence'])
     
     pose_df = pd.DataFrame(0.0, index=range(1, max_frame + 1), columns=columns)
     
-    for idx, name in keypoint_map.items():
+    for idx, name in KEYPOINT_MAP.items():
         subset = raw_data[raw_data['idx'] == idx]
         for _, row in subset.iterrows():
             f = int(row['frame'])
@@ -71,7 +57,7 @@ def load_bar_data(filepath, n_frames):
     
     full_index = range(1, n_frames + 1)
     df = df.reindex(full_index)
-    df = df.interpolate(method='linear').bfill().ffill()
+    df = df.interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
     
     return df.reset_index(drop=True)
 
@@ -257,252 +243,61 @@ def normalize_dataframe(df, exclude_cols=['frame', 'rep_id']):
                 result[col] = 0.0
     return result
 
-def extract_recording_id(path_str):
-    """從路徑字串中提取識別碼"""
-    import re
-    cleaned = str(path_str).replace('\\', '/').strip('/')
-    cleaned_lower = cleaned.lower()
-    
-    match = re.search(r'(s\d+)[/_](session\d+)[/_](recording_\d+_\d+)', cleaned_lower)
-    if match:
-        full_key = f"{match.group(1)}/{match.group(2)}/{match.group(3)}"
-        rec_name = match.group(3)
-        return full_key, rec_name
-        
-    match_rec = re.search(r'(recording_\d+_\d+)', cleaned_lower)
-    if match_rec:
-        return match_rec.group(1), match_rec.group(1)
-        
-    parts = [p for p in cleaned_lower.split('/') if p]
-    if len(parts) >= 3:
-        return "/".join(parts[-3:]), parts[-1]
-    elif len(parts) >= 1:
-        return parts[-1], parts[-1]
-        
-    return cleaned_lower, cleaned_lower
-
-def parse_rep_list(reps_obj):
-    """解開 GT 與 Pred 內部深蹲片段"""
-    import re
-    if not reps_obj:
-        return []
-
-    if isinstance(reps_obj, list) and len(reps_obj) > 0 and isinstance(reps_obj[0], dict):
-        item0 = reps_obj[0]
-        if 'result' in item0 and isinstance(item0['result'], dict) and 'clips' in item0['result']:
-            return item0['result']['clips']
-        if 'clips' in item0 and isinstance(item0['clips'], list):
-            return item0['clips']
-
-    if isinstance(reps_obj, dict):
-        if 'result' in reps_obj and isinstance(reps_obj['result'], dict) and 'clips' in reps_obj['result']:
-            return reps_obj['result']['clips']
-        if 'clips' in reps_obj and isinstance(reps_obj['clips'], list):
-            return reps_obj['clips']
-        for key in ['reps', 'segments', 'repetitions', 'annotations', 'events', 'labels', 'data', 'reps_with_id', 'items', 'clips']:
-            if key in reps_obj and isinstance(reps_obj[key], list):
-                return reps_obj[key]
-                
-        keys = list(reps_obj.keys())
-        try:
-            sorted_keys = sorted(keys, key=lambda k: int(re.search(r'\d+', str(k)).group()) if re.search(r'\d+', str(k)) else k)
-            return [reps_obj[k] for k in sorted_keys]
-        except Exception:
-            return list(reps_obj.values())
-
-    if isinstance(reps_obj, list):
-        return reps_obj
-        
-    return []
-
-def parse_rep_frames(rep_item):
-    """解析單一下深蹲的 start 與 end frame"""
-    start_val = None
-    end_val = None
-    
-    if isinstance(rep_item, dict):
-        for k in ['start_frame', 'start', 'start_idx', 'startFrame', 'begin', 'onset', 'start_time', 's', 'start_pos', 'from']:
-            if k in rep_item and rep_item[k] is not None:
-                start_val = rep_item[k]
-                break
-        for k in ['end_frame', 'end', 'end_idx', 'endFrame', 'stop', 'offset', 'end_time', 'e', 'end_pos', 'to']:
-            if k in rep_item and rep_item[k] is not None:
-                end_val = rep_item[k]
-                break
-                
-        if start_val is None or end_val is None:
-            for k in ['segment', 'range', 'interval', 'frames']:
-                if k in rep_item and isinstance(rep_item[k], (list, tuple)) and len(rep_item[k]) >= 2:
-                    start_val = rep_item[k][0]
-                    end_val = rep_item[k][-1]
-                    break
-
-    elif isinstance(rep_item, (list, tuple)):
-        if len(rep_item) >= 2:
-            start_val = rep_item[0]
-            end_val = rep_item[-1]
-            
-    if start_val is not None and end_val is not None:
-        try:
-            return int(start_val), int(end_val)
-        except (ValueError, TypeError):
-            return None, None
-            
-    return None, None
-
-def load_gt_records(gt_json_path):
-    """讀取 GT JSON 檔案並轉換為字典對照"""
-    if not gt_json_path or not os.path.exists(gt_json_path):
-        return {}, {}
-        
-    try:
-        with open(gt_json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception as e:
-        print(f"[WARNING] 無法讀取 GT JSON ({gt_json_path}): {e}")
-        return {}, {}
-        
-    if isinstance(data, dict):
-        for wrapper_key in ['data', 'results', 'annotations', 'records', 'items']:
-            if wrapper_key in data and isinstance(data[wrapper_key], (dict, list)):
-                data = data[wrapper_key]
-                break
-
-    full_dict = {}
-    rec_dict = {}
-    
-    if isinstance(data, dict):
-        for k, reps in data.items():
-            full_k, rec_name = extract_recording_id(k)
-            parsed_reps = parse_rep_list(reps)
-            full_dict[full_k] = parsed_reps
-            rec_dict[rec_name] = parsed_reps
-    elif isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                rec_id = (item.get('recording') or item.get('video') or item.get('file') or 
-                          item.get('name') or item.get('id') or item.get('file_name') or item.get('path'))
-                reps = (item.get('segments') or item.get('reps') or item.get('repetitions') or 
-                        item.get('labels') or item.get('annotations') or item.get('results') or item)
-                
-                if rec_id:
-                    full_k, rec_name = extract_recording_id(str(rec_id))
-                    parsed_reps = parse_rep_list(reps)
-                    full_dict[full_k] = parsed_reps
-                    rec_dict[rec_name] = parsed_reps
-
-    return full_dict, rec_dict
-
-def visualize_basic_segmentation(rec_path, df_pose, df_bar, reps, output_path, gt_reps=None):
-    """使用 GT (S01_S108.json) 與 yolo_coordinates.txt 畫出基本切割情況"""
+def visualize_basic_segmentation(rec_path, df_pose, df_bar, reps, output_path):
+    """使用 segments.json 與 yolo_coordinates.txt 畫出基本切割情況"""
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
-    try:
-        bar_y = df_bar['bar_y_smoothed'].values if 'bar_y_smoothed' in df_bar.columns else df_bar['bar_y'].values
-        frames = df_bar.index
+    
+    bar_y = df_bar['bar_y_smoothed'].values if 'bar_y_smoothed' in df_bar.columns else df_bar['bar_y'].values
+    frames = df_bar.index
+    
+    # 畫出槓鈴 Y 軸軌跡 (反轉 Y 軸以符合影像座標)
+    ax1.plot(frames, bar_y, label='Barbell Y (Pixels)', color='#3498db', linewidth=2)
+    ax1.invert_yaxis()
+    
+    # 標記每一下的區間與最低點
+    for r in reps:
+        start = r['start']
+        bottom = r['bottom']
+        end = r['end']
+        # 著色區間
+        ax1.axvspan(start, end, color='#f1c40f', alpha=0.15)
+        # 標記起點、最低點、終點
+        ax1.scatter(start, bar_y[start], color='green', marker='o', s=40, label='Start' if r['rep_id'] == 1 else "")
+        ax1.scatter(bottom, bar_y[bottom], color='red', marker='v', s=60, label='Bottom' if r['rep_id'] == 1 else "")
+        ax1.scatter(end, bar_y[end], color='blue', marker='x', s=40, label='End' if r['rep_id'] == 1 else "")
         
-        # 畫出槓鈴 Y 軸軌跡 (反轉 Y 軸以符合影像座標)
-        ax1.plot(frames, bar_y, label='Barbell Y (Pixels)', color='#3498db', linewidth=2)
-        ax1.invert_yaxis()
-        
-        # 畫出黃色螢光區間 (優先使用 Ground Truth S01_S108)
-        spans_to_draw = []
-        if gt_reps:
-            for item in gt_reps:
-                s_f, e_f = parse_rep_frames(item)
-                if s_f is not None and e_f is not None:
-                    spans_to_draw.append((s_f, e_f))
-            span_label = "GT Segment (S01_S108)"
-        else:
-            for r in reps:
-                spans_to_draw.append((r['start'], r['end']))
-            span_label = "Predicted Segment"
-
-        for idx, (start, end) in enumerate(spans_to_draw):
-            ax1.axvspan(start, end, color='#f1c40f', alpha=0.25, label=span_label if idx == 0 else "")
-
-        # 標記每一下預測的起點、最低點、終點
+    ax1.set_title(f"Basic Segmentation Check - {os.path.basename(rec_path)}")
+    ax1.set_ylabel("Barbell Y Position")
+    ax1.grid(True, alpha=0.2)
+    ax1.legend(loc='upper right')
+    
+    if 'hip_angle_smoothed' in df_pose.columns and 'knee_angle_smoothed' in df_pose.columns:
+        hip_angles = df_pose['hip_angle_smoothed'].values
+        knee_angles = df_pose['knee_angle_smoothed'].values
+        ax2.plot(frames, hip_angles, label='Hip Angle', color='red', linewidth=2)
+        ax2.plot(frames, knee_angles, label='Knee Angle', color='green', linewidth=2)
         for r in reps:
-            start = r['start']
-            bottom = r['bottom']
-            end = r['end']
-            if start < len(bar_y):
-                ax1.scatter(start, bar_y[start], color='green', marker='o', s=40, label='Start' if r['rep_id'] == 1 else "")
-            if bottom < len(bar_y):
-                ax1.scatter(bottom, bar_y[bottom], color='red', marker='v', s=60, label='Bottom' if r['rep_id'] == 1 else "")
-            if end < len(bar_y):
-                ax1.scatter(end, bar_y[end], color='blue', marker='x', s=40, label='End' if r['rep_id'] == 1 else "")
-            
-        ax1.set_title(f"Basic Segmentation Check - {os.path.basename(rec_path)}")
-        ax1.set_ylabel("Barbell Y Position")
-        ax1.grid(True, alpha=0.2)
-        ax1.legend(loc='upper right')
-        
-        if 'hip_angle_smoothed' in df_pose.columns and 'knee_angle_smoothed' in df_pose.columns:
-            hip_angles = df_pose['hip_angle_smoothed'].values
-            knee_angles = df_pose['knee_angle_smoothed'].values
-            if np.max(hip_angles) > 1.0 or np.max(knee_angles) > 1.0:
-                ax2.plot(frames, hip_angles, label='Hip Angle', color='red', linewidth=2)
-                ax2.plot(frames, knee_angles, label='Knee Angle', color='green', linewidth=2)
-                for idx, (start, end) in enumerate(spans_to_draw):
-                    ax2.axvspan(start, end, color='#f1c40f', alpha=0.25, label=span_label if idx == 0 else "")
-                ax2.set_ylim(0, 185)
-        
-        ax2.set_xlabel("Frame Index")
-        ax2.set_ylabel("Angle (Degrees)")
-        ax2.grid(True, alpha=0.2)
-        ax2.legend(loc='upper right')
-        
-        plt.tight_layout()
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        try:
-            fig.savefig(output_path, dpi=150)
-        except Exception as save_err:
-            # 若檔案被外部檢視器開啟/鎖定，嘗試先刪除再寫入，或儲存為備用檔名
-            try:
-                import time
-                time.sleep(0.1)
-                if os.path.exists(output_path):
-                    try:
-                        os.remove(output_path)
-                    except Exception:
-                        pass
-                fig.savefig(output_path, dpi=150)
-            except Exception:
-                alt_path = output_path.replace(".png", "_latest.png")
-                try:
-                    fig.savefig(alt_path, dpi=150)
-                    print(f"  [Info] 原圖片被外部程式鎖定，已另存為: {os.path.basename(alt_path)}")
-                except Exception as final_err:
-                    print(f"  [Warning] Failed to save plot to {output_path}: {final_err}")
-    except Exception as e:
-        print(f"  [Warning] Failed in visualization: {e}")
-    finally:
-        plt.close(fig)
-        plt.close('all')
+            ax2.axvspan(r['start'], r['end'], color='#f1c40f', alpha=0.15)
+    
+    ax2.set_xlabel("Frame Index")
+    ax2.set_ylabel("Angle (Degrees)")
+    ax2.grid(True, alpha=0.2)
+    ax2.legend(loc='upper right')
+    
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description="Squat Feature Extraction & Visualization")
     parser.add_argument("--input", required=True, help="Input directory containing recordings")
     parser.add_argument("--fps", type=int, default=30, help="Video FPS")
     parser.add_argument("--normalize", action="store_true", help="Whether to output normalized CSVs")
-    parser.add_argument("--gt", type=str, default=r"D:\squat_dataset\S01_S108.json", help="Ground Truth JSON Path")
     args = parser.parse_args()
 
     demo_dir = args.input
     extractor = SquatFeatureExtractor(fps=args.fps)
     
-    # 載入 Ground Truth (S01_S108.json)
-    gt_path = args.gt
-    if not os.path.exists(gt_path):
-        for candidate_name in ["S01_S108.json", "S83_S108.json"]:
-            candidate = os.path.join(demo_dir, candidate_name)
-            if os.path.exists(candidate):
-                gt_path = candidate
-                break
-            
-    print(f"[INFO] 載入 Ground Truth: {gt_path}")
-    gt_full_dict, gt_rec_dict = load_gt_records(gt_path)
-
     # 建立全局總結果儲存路徑 (供彙整表使用)
     # global_summary_dir = os.path.join(demo_dir, "analysis_results")
     # os.makedirs(global_summary_dir, exist_ok=True)
@@ -529,38 +324,12 @@ def main():
                 if "棋盤" not in root:
                     recordings_paths.append(os.path.abspath(root))
     
-    EXCLUDE_RECORDINGS = [
-        "recording_20260512_112434",  # S87
-        "recording_20260514_162045",  # S90
-        "recording_20260521_140622",  # S94
-        "recording_20260601_104441",  # S103
-        "recording_20260611_153424",  # S108
-        "recording_20260611_153127",  # S108
-        "recording_20260511_133807",  # S084
-        "recording_20251203_111026",  # S016
-        "recording_20251125_102222",  # S008
-        "recording_20260205_112900",  # S027
-        "recording_20260325_154346",  # S049
-        "recording_20260420_132533",  # S060
-        "recording_20260427_144840",  # S068
-        "recording_20260507_164157",  # S042
-        "recording_20260311_164032",  # S039
-        "recording_20260406_104653",  # S054
-        "recording_20260504_113752",  # S077
-        "recording_20251126_120959",  # S010
-    ]
-
     current_subject = None
     for rec_path in recordings_paths:
         rec = os.path.basename(rec_path)
         # 取得相對路徑作為字典 Key 避免重名覆蓋
         rel_rec_path = os.path.relpath(rec_path, demo_dir)
         rel_key = rel_rec_path.replace('\\', '/')
-        
-        # 檢查是否為排除之錄影資料夾
-        if any(ex in rel_key for ex in EXCLUDE_RECORDINGS):
-            print(f"[EXCLUDE] 跳過指定排除的錄影: {rel_key}")
-            continue
         
         path_parts = rel_rec_path.split(os.sep)
         subject_name = path_parts[0] if len(path_parts) > 0 else "unknown"
@@ -633,18 +402,12 @@ def main():
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(reps_with_id, f, indent=4)
                 
-                # 4. 尋找對應之 GT 段落並生成基本切割視覺化圖表
-                full_k, rec_name = extract_recording_id(rel_key)
-                rec_gt_reps = gt_full_dict.get(full_k) or gt_rec_dict.get(rec_name) or []
-                
-                try:
-                    segment_plot_path = os.path.join(rec_path, "segmentation_check_v2.png")
-                    visualize_basic_segmentation(rec_path, pose_clean, bar_clean, reps_with_id, segment_plot_path, gt_reps=rec_gt_reps)
-                except Exception as viz_err:
-                    print(f"  [Warning] Visualization plot skipped due to: {viz_err}")
+                # 4. 生成基本切割視覺化圖表
+                segment_plot_path = os.path.join(rec_path, "segmentation_check.png")
+                visualize_basic_segmentation(rec_path, pose_clean, bar_clean, reps_with_id, segment_plot_path)
                 
                 all_segments[rel_key] = reps_with_id
-                print(f"  Found {len(features)} reps (GT reps: {len(rec_gt_reps)}). Results saved in {rec_path}")
+                print(f"  Found {len(features)} reps. Results saved in {rec_path}")
             else:
                 all_segments[rel_key] = []
                 print(f"  No reps detected.")
