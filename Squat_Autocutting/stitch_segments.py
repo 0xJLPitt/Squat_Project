@@ -87,10 +87,33 @@ def main():
 
     print(f"開始搜尋 {input_dir} 內的資料夾...\n")
     
+    EXCLUDE_RECORDINGS = [
+        "recording_20260512_112434",  # S87
+        "recording_20260514_162045",  # S90
+        "recording_20260521_140622",  # S94
+        "recording_20260601_104441",  # S103
+        "recording_20260611_153424",  # S108
+        "recording_20260611_153127",  # S108
+        "recording_20260511_133807",  # S084
+        "recording_20251203_111026",  # S016
+        "recording_20251125_102222",  # S008
+        "recording_20260205_112900",  # S027
+        "recording_20260325_154346",  # S049
+        "recording_20260420_132533",  # S060
+        "recording_20260427_144840",  # S068
+        "recording_20260507_164157",  # S042
+        "recording_20260311_164032",  # S039
+        "recording_20260406_104653",  # S054
+        "recording_20260504_113752",  # S077
+        "recording_20251126_120959",  # S010
+    ]
+
     # 遍歷底下所有資料夾
     processed_any = False
     for root, dirs, files in os.walk(input_dir):
         if "棋盤" in root:
+            continue
+        if any(ex in root for ex in EXCLUDE_RECORDINGS):
             continue
         if 'RD.avi' in files and 'segments.json' in files:
             stitch_recording(root)
