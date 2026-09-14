@@ -69,6 +69,49 @@ except ImportError as e:
     )
 
 # ------------------------------------------------------------------------------
+# 12 身體關鍵點定義 (過濾移除頭部 5 點: 0 nose, 1 left_eye, 2 right_eye, 3 left_ear, 4 right_ear)
+# ------------------------------------------------------------------------------
+# 原 COCO 17 點中保留: 雙肩(5,6)、雙肘(7,8)、雙腕(9,10)、雙髖(11,12)、雙膝(13,14)、雙踝(15,16)
+SELECTED_KEYPOINT_INDICES = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+
+BODY_12_KEYPOINT_NAMES = [
+    "left_shoulder",   # 0 (原 COCO 5)
+    "right_shoulder",  # 1 (原 COCO 6)
+    "left_elbow",      # 2 (原 COCO 7)
+    "right_elbow",     # 3 (原 COCO 8)
+    "left_wrist",      # 4 (原 COCO 9)
+    "right_wrist",     # 5 (原 COCO 10)
+    "left_hip",        # 6 (原 COCO 11)
+    "right_hip",       # 7 (原 COCO 12)
+    "left_knee",       # 8 (原 COCO 13)
+    "right_knee",      # 9 (原 COCO 14)
+    "left_ankle",      # 10 (原 COCO 15)
+    "right_ankle"      # 11 (原 COCO 16)
+]
+NUM_BODY_KEYPOINTS = len(SELECTED_KEYPOINT_INDICES)  # 12
+
+
+def is_valid_12_keypoints_file(txt_path: Path) -> bool:
+    """檢查現有骨架檔案是否已為 12 關鍵點格式 (避免 17 點舊格式被誤判為已完成)"""
+    if not txt_path.exists() or txt_path.stat().st_size == 0:
+        return False
+    try:
+        with open(txt_path, "r", encoding="utf-8") as f:
+            for _ in range(30):
+                line = f.readline()
+                if not line:
+                    break
+                parts = line.strip().split(",")
+                if len(parts) >= 2:
+                    joint_idx = int(parts[1])
+                    if joint_idx > 11:
+                        return False
+        return True
+    except Exception:
+        return False
+
+
+# ------------------------------------------------------------------------------
 # SBDFormer 臥推預設路徑配置
 # ------------------------------------------------------------------------------
 DEFAULT_SUBJECT_DIR = Path(r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\subject\sub2")
@@ -131,22 +174,23 @@ def process_benchpress_directory(
         return 0
 
     print("=" * 70)
-    print(f"🎬 執行 Step 1: 臥推影片 YOLO Pose 姿態辨識 (透過 Squat_2dto3d 核心推論)")
+    print(f"🎬 執行 Step 1: 臥推影片 YOLO Pose 姿態辨識 (僅輸出身體 12 關鍵點)")
     print(f" 📂 影片來源目錄: {cam_dir}")
     print(f" 📁 骨架輸出目錄: {output_dir}")
+    print(f" 🦴 關鍵點模式  : 12 關鍵點 (已移除頭部臉部 5 點，保留肩肘腕髖膝踝)")
     print(f" 🎞️ 待處理影片數: {len(video_files)} 部")
     for idx, vf in enumerate(video_files, 1):
         print(f"   [{idx}] {vf.name}")
     print("=" * 70)
 
-    # 預先檢查是否全部已完成
+    # 預先檢查是否全部已完成 (必須存在且符合 12 關鍵點格式)
     tasks = []
     for v_file in video_files:
         out_txt = output_dir / f"yolo_skeleton_{v_file.stem}.txt"
         tasks.append((v_file, [out_txt]))
 
-    if not overwrite and all(all(p.exists() and p.stat().st_size > 0 for p in outs) for _, outs in tasks):
-        print("[INFO] 所有影片骨架檔案皆已存在，略過模型載入與處理。若要重新產生請加上 --overwrite 參數。")
+    if not overwrite and all(all(is_valid_12_keypoints_file(p) for p in outs) for _, outs in tasks):
+        print("[INFO] 所有影片骨架檔案皆已存在且為 12 點格式，略過模型載入與處理。若要重新產生請加上 --overwrite 參數。")
         return len(tasks)
 
     # 延遲載入 YOLO 模型
@@ -159,7 +203,8 @@ def process_benchpress_directory(
             output_txts=output_txts,
             model=model,
             conf_thresh=conf_thresh,
-            overwrite=overwrite
+            overwrite=overwrite,
+            keypoint_indices=SELECTED_KEYPOINT_INDICES
         )
         if ok:
             success_count += 1
@@ -170,7 +215,7 @@ def process_benchpress_directory(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Step 1: 臥推多視角影片 YOLO Pose 姿態辨識 (SBDFormer Adapter)"
+        description="Step 1: 臥推多視角影片 YOLO Pose 姿態辨識 (12 身體關鍵點輸出 - SBDFormer Adapter)"
     )
     parser.add_argument(
         "--subject", "-s",
@@ -224,7 +269,8 @@ def main():
             model_or_path=args.model,
             output_target=args.output,
             conf_thresh=args.conf,
-            overwrite=args.overwrite
+            overwrite=args.overwrite,
+            keypoint_indices=SELECTED_KEYPOINT_INDICES
         )
         return
 

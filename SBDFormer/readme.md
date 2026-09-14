@@ -18,7 +18,7 @@ D:\Pitt\Project\Squat_Project\video\benchpress_3D\
         │
         ├── dataprocess\                    # 【母層：受試者全局切片與分析數據】
         │   │                               # (智慧相容命名: dataprocess 或 dataprocess-i17)
-        │   ├── yolo_skeleton_error1.txt    # 來自 i17 視角的 YOLO 2D 骨架座標 (17 關節點)
+        │   ├── yolo_skeleton_error1.txt    # 來自 i17 視角的 YOLO 2D 骨架座標 (12 身體關鍵點，已排除臉部 5 點)
         │   ├── yolo_skeleton_error1_segments.json     # 動作切片 JSON 標註檔 (含 Rep 1~n 關鍵影格)
         │   ├── yolo_skeleton_error1_segmentation.png  # 手腕運動軌跡與分期波形圖
         │   ├── yolo_skeleton_error1_segments.csv      # (選配) 切片資訊表格檔
@@ -152,10 +152,10 @@ mamba run -n hw1 python make_cvat_skeleton_labels.py --check "path\to\cvat_raw_l
    - 進入 CVAT 網站（如 `https://app.cvat.ai/tasks/create` 或自建伺服器）。
    - **Task Name**: 輸入任務名稱，如 `BenchPress_sub2-i17`。
    - **Labels 標籤設定（重要）**：
-     - **【方案 A：Raw 分頁貼上（推薦，適用無法直接在 UI 建立 COCO 骨架的 CVAT 網站）】**：
-       在 `Labels` 區域右上角切換至 **`Raw`** 分頁，打開同目錄下的 **`cvat_raw_labels.json`**，全選複製內容並貼入文字框中即可！
-     - **【方案 B：UI 精靈法（若網站支援）】**：
-       點選 `Setup Skeleton` ➔ 選擇 `COCO Keypoints (17 points)` ➔ 標籤名設為 `person`。
+      - **【方案 A：Raw 分頁貼上（推薦，適用 12 關鍵點客製骨架標籤）】**：
+        在 `Labels` 區域右上角切換至 **`Raw`** 分頁，打開同目錄下的 **`cvat_raw_labels.json`**，全選複製內容並貼入文字框中即可（包含 12 個關節點與對應骨骼連線）！
+      - **【方案 B：UI 精靈法】**：
+        若使用 UI 手動建立，請建立 `person` (skeleton) 標籤，並加入 12 個子點 (left_shoulder, right_shoulder, left_elbow, right_elbow, left_wrist, right_wrist, left_hip, right_hip, left_knee, right_knee, left_ankle, right_ankle)。強烈建議直接使用方案 A 的 Raw 分頁最快速且不會出錯。
    - **上傳圖片包 (Select Files)**：
      - 將匯出的純圖片壓縮包 **`images_sub2-i17.zip`** 拖入檔案區（**僅傳圖片 ZIP，切勿把 JSON 拖入此區**）。
    - 點選最下方 **`Submit & Open`** 建立任務。
@@ -164,7 +164,7 @@ mamba run -n hw1 python make_cvat_skeleton_labels.py --check "path\to\cvat_raw_l
    - 格式選擇 **`COCO Keypoints 1.0`**。
    - 檔案選擇匯出的 **`person_keypoints_default.json`**，點擊確認上傳，1~2 秒鐘即載入完畢！
 3. **標註人員微調 (Fine-tuning)**:
-   - 打開影格，17 個骨架點已依照 YOLO 偵測的位置排列並繪製骨骼連線。
+   - 打開影格，12 個身體骨架點已依照 YOLO 偵測的位置排列並繪製骨骼連線（頭部眼睛與耳朵 5 點已排除，不再干擾畫面）。
    - 標註人員僅需檢查並微調臥推時被槓鈴反光遮擋的關節點：
      - **手腕 (`left_wrist`, `right_wrist`)**：對齊手掌根骨與槓鈴握法交界處。
      - **手肘 (`left_elbow`, `right_elbow`)**：確認手肘彎曲最低點。

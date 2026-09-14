@@ -12,7 +12,7 @@ Step 4: 臥推照片檔與 2D 骨架數據整理 & CVAT 標註包匯出工具
      - descent_mid  [下降 50% ROM]
      - bottom       [最低點/觸胸]
      - ascent_mid   [上升 50% ROM]
-  3. 整合對應影格的 17 個 COCO 關節點座標 (x, y)，並自動計算人物 Bounding Box 與可見度。
+  3. 整合對應影格的 12 個身體關節點座標 (x, y，已移除臉部眼睛耳朵 5 點)，並自動計算人物 Bounding Box 與可見度。
   4. 自動將抽出的照片與標籤打包成標準 COCO Keypoints 1.0 格式 (CVAT 原生直接支援)。
   5. 產出:
      - cvat_export/{cam_name}/images/             : 匯集該視角所有關鍵影格照片
@@ -59,34 +59,41 @@ DEFAULT_PARENT_DIR = Path(r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\su
 DEFAULT_DATAPROCESS_DIR = Path(r"D:\Pitt\Project\Squat_Project\video\benchpress_3D\subject\sub2\dataprocess")
 DEFAULT_CAM = "sub2-i17"
 
-# COCO 17 關節點定義 (標準順序)
-COCO_KEYPOINT_NAMES = [
-    "nose",            # 0
-    "left_eye",        # 1
-    "right_eye",       # 2
-    "left_ear",        # 3
-    "right_ear",       # 4
-    "left_shoulder",   # 5
-    "right_shoulder",  # 6
-    "left_elbow",      # 7
-    "right_elbow",     # 8
-    "left_wrist",      # 9
-    "right_wrist",     # 10
-    "left_hip",        # 11
-    "right_hip",       # 12
-    "left_knee",       # 13
-    "right_knee",      # 14
-    "left_ankle",      # 15
-    "right_ankle"      # 16
+# 12 身體關鍵點定義 (移除頭部 5 點: nose, left_eye, right_eye, left_ear, right_ear)
+BODY_12_KEYPOINT_NAMES = [
+    "left_shoulder",   # 0
+    "right_shoulder",  # 1
+    "left_elbow",      # 2
+    "right_elbow",     # 3
+    "left_wrist",      # 4
+    "right_wrist",     # 5
+    "left_hip",        # 6
+    "right_hip",       # 7
+    "left_knee",       # 8
+    "right_knee",      # 9
+    "left_ankle",      # 10
+    "right_ankle"      # 11
 ]
 
-# COCO 標準骨骼連線 (1-based index)
-COCO_SKELETON_EDGES = [
-    [16, 14], [14, 12], [17, 15], [15, 13], [12, 13],
-    [6, 12], [7, 13], [6, 7], [7, 9], [9, 11],
-    [6, 8], [8, 10], [1, 2], [1, 3], [2, 4],
-    [3, 5], [4, 6], [5, 7]
+# 12 身體骨骼連線 (1-based index)
+BODY_12_SKELETON_EDGES = [
+    [1, 2],    # left_shoulder - right_shoulder
+    [1, 3],    # left_shoulder - left_elbow
+    [3, 5],    # left_elbow - left_wrist
+    [2, 4],    # right_shoulder - right_elbow
+    [4, 6],    # right_elbow - right_wrist
+    [1, 7],    # left_shoulder - left_hip
+    [2, 8],    # right_shoulder - right_hip
+    [7, 8],    # left_hip - right_hip
+    [7, 9],    # left_hip - left_knee
+    [9, 11],   # left_knee - left_ankle
+    [8, 10],   # right_hip - right_knee
+    [10, 12],  # right_knee - right_ankle
 ]
+
+# 預設採用 12 身體關鍵點規格
+COCO_KEYPOINT_NAMES = BODY_12_KEYPOINT_NAMES
+COCO_SKELETON_EDGES = BODY_12_SKELETON_EDGES
 
 # 動作 4 大關鍵影格對應鍵值
 KEYFRAME_PHASES = [
@@ -401,7 +408,7 @@ def build_coco_keypoints_dataset(
                 except Exception:
                     pass
 
-            # 3. 取得 17 個關節點數據
+            # 3. 取得 12 個身體關節點數據
             frame_joints = skeleton_dict.get(f_idx, {})
 
             # 組合 COCO keypoints: [x0, y0, v0, x1, y1, v1, ...]
@@ -410,7 +417,7 @@ def build_coco_keypoints_dataset(
             named_joints = {}
             labeled_count = 0
 
-            for j_i in range(17):
+            for j_i in range(len(COCO_KEYPOINT_NAMES)):
                 if j_i in frame_joints:
                     jx, jy = frame_joints[j_i]
                     if jx > 0 or jy > 0:
@@ -488,7 +495,7 @@ def build_coco_keypoints_dataset(
     print("\n" + "=" * 75)
     print("🎉 資料融合與標註檔產出完畢！")
     print(f" 🖼️ 匯總照片數量: {total_images} 張 (已同步集中至 {images_out_dir.name}/)")
-    print(f" 🏷️ 標註物件數量: {total_annotations} 個 (17 點骨架 & BBox)")
+    print(f" 🏷️ 標註物件數量: {total_annotations} 個 (12 點骨架 & BBox)")
     print(f" 📄 唯一 COCO 標註檔案: {person_kpts_file.name}")
     print(f" 🦴 CVAT Raw 標籤檔案: cvat_raw_labels.json (適用 Raw 分頁貼上)")
     print("=" * 75)

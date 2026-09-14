@@ -2,77 +2,22 @@
 # -*- coding: utf-8 -*-
 r"""
 ================================================================================
-CVAT COCO-17 Skeleton 標籤 (Raw Labels) 產生工具
-(Generate a valid CVAT skeleton label definition for COCO 17 keypoints)
+CVAT 12 關鍵點身體骨架 (Body-12 Skeleton) 標籤 (Raw Labels) 產生工具
+(Generate a valid CVAT skeleton label definition for 12 body keypoints)
 ================================================================================
 背景 / 為什麼需要這支程式:
+  已移除頭部臉部 5 點 (nose, left_eye, right_eye, left_ear, right_ear)，
+  保留身體 12 個關鍵點 (雙肩、雙肘、雙腕、雙髖、雙膝、雙踝)。
 
-  A) ⚠️ **label 的 svg 欄位絕對不能自帶 `<svg>` 外層** —— 這是最容易踩、
-     而且錯誤訊息完全看不出來的一個坑。
-     cvat-core 的 Label constructor 會自己補上外層:
-
-         t.svg = Label.parseUntrustedSvg(`<svg>${t.svg ?? ""}</svg>`)
-
-     若存進去的值本身已經是 `<svg>...</svg>`，就會變成 `<svg><svg>...</svg></svg>`，
-     於是 structure.svg 的 children 只有「一個內層 <svg>」而不是 17 個 <circle>。
-     前端 canvasView.ts 的 addSkeleton():
-
-         const templateElements = Array.from(SVGElement.children())
-             .filter((el) => el.type === 'circle');          // ← 變成空陣列
-         const templateElement = templateElements.find(...); // ← undefined
-         visibleNodeIDs.add(templateElement.attr('data-node-id'));
-
-     就會噴 TypeError: Cannot read properties of undefined (reading 'attr')。
-     反證: Label.toJSON() 匯出時用的是 `t.svg.innerHTML`，
-     所以 CVAT 原生存的值本來就是「不含外層」的。
-
+  A) ⚠️ **label 的 svg 欄位絕對不能自帶 `<svg>` 外層** —— cvat-core 會自己補上外層。
   B) <circle> 一律使用 data-label-name，**絕對不要自己寫死 data-label-id**。
-     CVAT 伺服器端 cvat/apps/engine/serializers.py create_labels() 會先把
-     送上來的 label id 丟掉 (`if label.get("id"): del label["id"]`)，
-     再自行把 svg 裡的 data-label-name 換成真正的 sublabel id:
-
-         svg = svg.replace(f'data-label-name="{db_sublabel.name}"',
-                           f'data-label-id="{db_sublabel.id}"')
-
-     若自己寫死 id，建立任務後 svg 內的 id 會對不上實際 sublabel id，
-     同樣噴 reading 'attr'。
-
-  C) <line> 的 data-node-from / data-node-to 必須是「整數 node id」，
-     不能寫關節名稱；<circle> 必須有 data-node-id / data-element-id。
-     cvat-canvas/src/typescript/shared.ts setupSkeletonEdges() 有硬性檢查:
-
-         if (!Number.isInteger(dataNodeFrom) || !Number.isInteger(dataNodeTo)) {
-             throw new Error("Edge nodeFrom and nodeTo must be numbers, ...");
-         }
-
-     這個例外會讓 svgShapes 沒被賦值，後續 activateShape() 噴
-     TypeError: Cannot read properties of undefined (reading 'addClass')。
-
-  D) 只有 DOMPurify 白名單內的屬性會被保留 (Label.parseUntrustedSvg):
-     ALLOWED_TAGS = svg, line, circle, desc
-     ALLOWED_ATTR = cx, cy, r, x1, y1, x2, y2, data-type, data-element-id,
-                    data-label-name, data-label-id, data-node-id,
-                    data-node-from, data-node-to, data-description-type
-     stroke / fill / stroke-width 會被直接濾掉，寫了也沒用。
-
-  E) ⚠️ 既有任務「無法」改 skeleton 結構。LabelSerializer 的
-     read_only_fields 含有 "svg"，且 update_label() 只在「新建 label」時
-     才寫入 Skeleton.svg。也就是說把修好的 JSON 貼回既有任務的 Raw 分頁，
-     伺服器會靜默忽略。SVG 壞掉的任務只能**刪掉重建**。
+  C) <line> 的 data-node-from / data-node-to 必須是「整數 node id (1~12)」。
+  D) 只有 DOMPurify 白名單內的屬性會被保留。
+  E) 既有任務「無法」改 skeleton 結構，壞掉的任務請刪除後重新用本檔建立。
 
 產出:
   1. cvat_raw_labels.json     : 建立新 Task / Project 時貼進 Labels -> Raw 分頁
   2. coco_person_skeleton.svg : 可直接用瀏覽器預覽的骨架示意圖
-
-使用範例:
-  1. 產生定義檔 (輸出到預設 sub2-i17 資料夾):
-     $ mamba run -n hw1 python make_cvat_skeleton_labels.py
-
-  2. 指定輸出資料夾:
-     $ mamba run -n hw1 python make_cvat_skeleton_labels.py --out "D:\Pitt\...\cvat_export\sub2-i17"
-
-  3. 檢查手上的 raw labels JSON 是否合規 (例如從 CVAT Raw 分頁複製下來的):
-     $ mamba run -n hw1 python make_cvat_skeleton_labels.py --check cvat_raw_labels.json
 ================================================================================
 """
 
@@ -99,34 +44,41 @@ SKELETON_LABEL_NAME = "person"
 SKELETON_LABEL_COLOR = "#ff0000"
 SUBLABEL_COLOR = "#00ff00"
 
-# COCO 17 關節點定義 (標準順序) 與 skeleton 模板上的示意座標 (viewBox 0 0 100 100)
-COCO_KEYPOINTS: List[Dict[str, Any]] = [
-    {"name": "nose",           "cx": 50, "cy": 15},
-    {"name": "left_eye",       "cx": 46, "cy": 12},
-    {"name": "right_eye",      "cx": 54, "cy": 12},
-    {"name": "left_ear",       "cx": 42, "cy": 14},
-    {"name": "right_ear",      "cx": 58, "cy": 14},
-    {"name": "left_shoulder",  "cx": 38, "cy": 28},
-    {"name": "right_shoulder", "cx": 62, "cy": 28},
-    {"name": "left_elbow",     "cx": 28, "cy": 42},
-    {"name": "right_elbow",    "cx": 72, "cy": 42},
-    {"name": "left_wrist",     "cx": 20, "cy": 56},
-    {"name": "right_wrist",    "cx": 80, "cy": 56},
-    {"name": "left_hip",       "cx": 42, "cy": 55},
-    {"name": "right_hip",      "cx": 58, "cy": 55},
-    {"name": "left_knee",      "cx": 40, "cy": 75},
-    {"name": "right_knee",     "cx": 60, "cy": 75},
-    {"name": "left_ankle",     "cx": 40, "cy": 95},
-    {"name": "right_ankle",    "cx": 60, "cy": 95},
+# 12 身體關鍵點定義 (過濾移除頭部 5 點: nose, left_eye, right_eye, left_ear, right_ear)
+BODY_12_KEYPOINTS: List[Dict[str, Any]] = [
+    {"name": "left_shoulder",  "cx": 38, "cy": 25},  # 1 (0-based: 0)
+    {"name": "right_shoulder", "cx": 62, "cy": 25},  # 2 (0-based: 1)
+    {"name": "left_elbow",     "cx": 28, "cy": 42},  # 3 (0-based: 2)
+    {"name": "right_elbow",    "cx": 72, "cy": 42},  # 4 (0-based: 3)
+    {"name": "left_wrist",     "cx": 20, "cy": 56},  # 5 (0-based: 4)
+    {"name": "right_wrist",    "cx": 80, "cy": 56},  # 6 (0-based: 5)
+    {"name": "left_hip",       "cx": 42, "cy": 58},  # 7 (0-based: 6)
+    {"name": "right_hip",      "cx": 58, "cy": 58},  # 8 (0-based: 7)
+    {"name": "left_knee",      "cx": 40, "cy": 76},  # 9 (0-based: 8)
+    {"name": "right_knee",     "cx": 60, "cy": 76},  # 10 (0-based: 9)
+    {"name": "left_ankle",     "cx": 40, "cy": 95},  # 11 (0-based: 10)
+    {"name": "right_ankle",    "cx": 60, "cy": 95},  # 12 (0-based: 11)
 ]
 
-# COCO 標準骨骼連線 (1-based index，與 person_keypoints_default.json 的 skeleton 欄位一致)
-COCO_SKELETON_EDGES = [
-    [16, 14], [14, 12], [17, 15], [15, 13], [12, 13],
-    [6, 12], [7, 13], [6, 7], [7, 9], [9, 11],
-    [6, 8], [8, 10], [1, 2], [1, 3], [2, 4],
-    [3, 5], [4, 6], [5, 7],
+# 12 身體骨骼連線 (1-based index，供 CVAT skeleton 欄位)
+BODY_12_SKELETON_EDGES = [
+    [1, 2],    # left_shoulder - right_shoulder
+    [1, 3],    # left_shoulder - left_elbow
+    [3, 5],    # left_elbow - left_wrist
+    [2, 4],    # right_shoulder - right_elbow
+    [4, 6],    # right_elbow - right_wrist
+    [1, 7],    # left_shoulder - left_hip
+    [2, 8],    # right_shoulder - right_hip
+    [7, 8],    # left_hip - right_hip
+    [7, 9],    # left_hip - left_knee
+    [9, 11],   # left_knee - left_ankle
+    [8, 10],   # right_hip - right_knee
+    [10, 12],  # right_knee - right_ankle
 ]
+
+# 兼容別名
+COCO_KEYPOINTS = BODY_12_KEYPOINTS
+COCO_SKELETON_EDGES = BODY_12_SKELETON_EDGES
 
 NODE_RADIUS = 1.5
 NODE_STROKE_WIDTH = 0.1
@@ -384,7 +336,7 @@ def main() -> int:
     names = [kp["name"] for kp in COCO_KEYPOINTS]
 
     print("=" * 78)
-    print("🦴 產生 CVAT COCO-17 Skeleton 標籤定義")
+    print("🦴 產生 CVAT 12 關鍵點身體骨架 (Body-12 Skeleton) 標籤定義")
     print("=" * 78)
     print(f"📂 輸出資料夾: {out_dir}")
 

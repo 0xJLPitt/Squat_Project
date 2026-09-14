@@ -5,7 +5,7 @@ r"""
 Step 2: 臥推關鍵點判斷與動作切片預處理演算法
 (Bench Press Keypoints Kinematic Preprocess Algorithm)
 ================================================================================
-專門針對 YOLO 2D 骨架中的「左手手腕 (Left Wrist, COCO Index 9)」進行運動學特徵分析，
+專門針對 YOLO 2D 骨架中的「左手手腕 (Left Wrist, 12 點骨架 Index 4 / 舊版 17 點 Index 9)」進行運動學特徵分析，
 自動精準擷取每次臥推動作的 5 大關鍵影格 (Keyframes)：
   1. 頂點 (起) [Top Start / Lockout]   : 出槓/推起至最高鎖定點 (Y 座標局部極小值)
   2. 下降中段  [Descent Mid, 50% ROM]  : 下放過程通過 50% 行程垂直高度差影格
@@ -94,7 +94,7 @@ class BenchpressWristAnalyzer:
     """
     臥推左手手腕運動學特徵分析器
     """
-    LEFT_WRIST_JOINT_ID = 9  # COCO 17 keypoint definition: 9 is left_wrist
+    LEFT_WRIST_JOINT_ID = 4  # 12 身體關鍵點定義: 4 代表 left_wrist (舊版 17 點格式為 9)
 
     def __init__(
         self,
@@ -164,17 +164,25 @@ class BenchpressWristAnalyzer:
 
     def preprocess_left_wrist(self, df: pd.DataFrame = None) -> pd.DataFrame:
         """
-        篩選左手手腕 (Joint 9)，進行異常值濾除、插值補全與平滑化處理
+        篩選左手手腕 (12 點格式預設 Joint 4，智慧相容舊版 17 點 Joint 9)，進行異常值濾除、插值補全與平滑化處理
         """
         if df is None:
             df = self.raw_df
         if df is None:
             raise ValueError("請先執行 load_skeleton_file 讀取資料！")
 
-        # 1. 僅抓取左手手腕 (Joint 9)
-        wrist = df[df['joint'] == self.LEFT_WRIST_JOINT_ID].sort_values('frame').copy().reset_index(drop=True)
+        # 智慧判斷 12 點或 17 點骨架格式
+        max_joint = df['joint'].max() if len(df) > 0 else 11
+        if max_joint >= 16:
+            target_joint_id = 9  # 舊版 COCO 17 點格式
+        else:
+            target_joint_id = self.LEFT_WRIST_JOINT_ID  # 12 點格式預設 (4)
+        self.current_wrist_joint_id = target_joint_id
+
+        # 1. 僅抓取左手手腕
+        wrist = df[df['joint'] == target_joint_id].sort_values('frame').copy().reset_index(drop=True)
         if len(wrist) == 0:
-            raise ValueError(f"資料中未找到關節索引為 {self.LEFT_WRIST_JOINT_ID} 的骨架點！")
+            raise ValueError(f"資料中未找到關節索引為 {target_joint_id} 的左手手腕骨架點！")
 
         # 2. 標記非有效值 (座標為 0 代表偵測遺漏/未入鏡)
         mask_zero = (wrist['x'] <= 0) | (wrist['y'] <= 0)
@@ -468,7 +476,7 @@ class BenchpressWristAnalyzer:
             export_payload = {
                 "metadata": {
                     "analyzed_joint": "left_wrist",
-                    "coco_joint_id": self.LEFT_WRIST_JOINT_ID,
+                    "joint_id": getattr(self, "current_wrist_joint_id", self.LEFT_WRIST_JOINT_ID),
                     "fps": self.fps,
                     "total_reps": len(self.reps_info)
                 },
@@ -705,7 +713,7 @@ def main():
     print(f"\n==================================================")
     print(f" 🚀 開始執行臥推左手手腕關鍵幀擷取演算法 (單檔模式)")
     print(f" 輸入檔案: {input_path}")
-    print(f" 鎖定關節: 左手手腕 (Left Wrist, Joint 9)")
+    print(f" 鎖定關節: 左手手腕 (Left Wrist, 12 點骨架 Index 4 / 舊版 17 點 Index 9)")
     print(f" 影片幀率: {args.fps} FPS")
     print(f" 輸出設定: JSON={'ON' if args.save_json else 'OFF'}, CSV={'ON' if args.save_csv else 'OFF'}, PNG={'ON' if args.save_plot else 'OFF'}")
     print(f"==================================================")

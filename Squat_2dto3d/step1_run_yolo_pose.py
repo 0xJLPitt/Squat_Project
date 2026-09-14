@@ -74,7 +74,7 @@ def get_model(model_or_path):
         return model_or_path
     return load_yolo_model(model_or_path)
 
-def process_single_video(video_path, output_txts, model, conf_thresh=0.25, overwrite=False):
+def process_single_video(video_path, output_txts, model, conf_thresh=0.25, overwrite=False, keypoint_indices=None):
     """
     執行單一影片的 YOLO 姿態辨識並輸出骨架數據。
     
@@ -83,6 +83,7 @@ def process_single_video(video_path, output_txts, model, conf_thresh=0.25, overw
     :param model: 已載入的 YOLO 模型物件
     :param conf_thresh: 辨識信心閾值
     :param overwrite: 若檔案已存在是否覆蓋
+    :param keypoint_indices: 指定擷取的關鍵點索引清單 (例如 [5,6,...,16] 僅擷取身體 12 點，預設 None 輸出全部 17 點)
     """
     video_path = Path(video_path)
     if not video_path.exists():
@@ -136,17 +137,20 @@ def process_single_video(video_path, output_txts, model, conf_thresh=0.25, overw
                 areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
                 best_person_idx = int(np.argmax(areas))
 
-            # 寫入關鍵點 (COCO 17 keypoints: frame_idx, joint_idx, x, y)
+            # 寫入關鍵點 (支援自訂關鍵點篩選或預設 COCO 17 keypoints: frame_idx, joint_idx, x, y)
             if (len(results) > 0 and 
                 results[0].keypoints is not None and 
                 len(results[0].keypoints.xy) > best_person_idx):
                 
                 keypoints = results[0].keypoints.xy[best_person_idx].cpu().numpy()
+                if keypoint_indices is not None:
+                    keypoints = keypoints[keypoint_indices]
                 for j_idx, (x, y) in enumerate(keypoints):
                     f.write(f"{frame_idx},{j_idx},{int(x)},{int(y)}\n")
             else:
                 # 該幀漏抓時補 0
-                for j_idx in range(17):
+                num_kpts = len(keypoint_indices) if keypoint_indices is not None else 17
+                for j_idx in range(num_kpts):
                     f.write(f"{frame_idx},{j_idx},0,0\n")
 
             frame_idx += 1
@@ -166,7 +170,7 @@ def process_single_video(video_path, output_txts, model, conf_thresh=0.25, overw
     print()
     return True
 
-def process_directory(directory_path, model_or_path, output_root=None, recursive=False, pattern=None, conf_thresh=0.25, overwrite=False):
+def process_directory(directory_path, model_or_path, output_root=None, recursive=False, pattern=None, conf_thresh=0.25, overwrite=False, keypoint_indices=None):
     """
     批次處理指定資料夾內的所有影片。
     
@@ -177,6 +181,7 @@ def process_directory(directory_path, model_or_path, output_root=None, recursive
     :param pattern: 檔名過濾關鍵字
     :param conf_thresh: 辨識信心閾值
     :param overwrite: 是否強制覆蓋
+    :param keypoint_indices: 指定擷取的關鍵點索引清單
     """
     target_dir = Path(directory_path)
     if not target_dir.exists():
@@ -234,10 +239,11 @@ def process_directory(directory_path, model_or_path, output_root=None, recursive
             output_txts=output_txts,
             model=model,
             conf_thresh=conf_thresh,
-            overwrite=overwrite
+            overwrite=overwrite,
+            keypoint_indices=keypoint_indices
         )
 
-def process_single_video_entry(video_path, model_or_path, output_target=None, conf_thresh=0.25, overwrite=False):
+def process_single_video_entry(video_path, model_or_path, output_target=None, conf_thresh=0.25, overwrite=False, keypoint_indices=None):
     """
     單一影片處理入口，支援指定輸出檔案名稱或目錄。
     """
@@ -274,7 +280,8 @@ def process_single_video_entry(video_path, model_or_path, output_target=None, co
         output_txts=output_txts,
         model=model,
         conf_thresh=conf_thresh,
-        overwrite=overwrite
+        overwrite=overwrite,
+        keypoint_indices=keypoint_indices
     )
 
 def main():
