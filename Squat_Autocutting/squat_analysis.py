@@ -169,18 +169,13 @@ class SquatFeatureExtractor:
         hip_rel_v = np.gradient(hip_rel_x_smooth.values) * self.fps
         knee_rel_v = np.gradient(knee_rel_x_smooth.values) * self.fps
         
-        # 計算腳踝的二維移動速度 (像素/秒) 與平滑 (含 Hampel 濾波器)
-        ankle_dx = np.gradient(pose_df['ankle_x'].values) * self.fps
-        ankle_dy = np.gradient(pose_df['ankle_y'].values) * self.fps
-        ankle_v = np.sqrt(ankle_dx**2 + ankle_dy**2)
-        ankle_v_smooth = apply_rolling_smoothing(apply_hampel_filter(pd.Series(ankle_v))).bfill().ffill().values
-
-        # 計算槓鈴水平速度與平滑 (含 Hampel 濾波器)
-        bar_v_x = np.gradient(bar_df['bar_x'].values) * self.fps
-        bar_v_x_smooth = apply_rolling_smoothing(apply_hampel_filter(pd.Series(bar_v_x))).bfill().ffill().values
-        
         reps = []
         n_frames = len(bar_y)
+        
+        # 狀態機變數 (已捨棄，但保留變數)
+        state = 0 
+        start_idx = 0
+        bottom_idx = 0
         
         from scipy.signal import find_peaks
 
@@ -196,224 +191,183 @@ class SquatFeatureExtractor:
         knee_end_thresh = max(np.std(knee_v) * 0.5, 3.0)
         hip_rel_end_thresh = max(np.std(hip_rel_v) * 0.5, 3.0)
         knee_rel_end_thresh = max(np.std(knee_rel_v) * 0.5, 3.0)
-
-        # 1. 尋找所有深蹲的波谷 (bar_y 的波峰，因為 y 向下為正)
-        # prominence=15, distance=30 確保二次彈跳 (W型波谷) 與快節奏淺蹲皆能被精準捕捉，且不重複採樣
-        bottoms_cand, properties = find_peaks(bar_y, prominence=15, distance=30)
-        cand_prominences = properties['prominences'] if 'prominences' in properties else []
         
-        # 步驟 1-1：計算相對深度/振幅離群值篩選門檻 (過濾回槓/出槓與微幅晃動)
-        if len(cand_prominences) > 0:
-            median_prom = float(np.median(cand_prominences))
-            max_prom = float(np.max(cand_prominences))
-            # 若整段影片有明確深蹲波形，相對於中位數振幅過淺（< 45% 且小於 80px）的波峰視為出槓/回槓/晃動雜訊
-            if median_prom >= 60.0:
-                min_prom_thresh = max(median_prom * 0.45, 40.0)
-            else:
-                min_prom_thresh = max(max_prom * 0.40, 35.0)
-        else:
-            min_prom_thresh = 30.0
-
-        # 步驟 1-2：過濾真正的深蹲波谷：排除小碎步、出槓與回槓沉降浮動
-        bottoms = []
-        for i_cand, b in enumerate(bottoms_cand):
-            knee_a = knee_angles_val[b]
-            hip_a = hip_angles_val[b]
-            drop_b = bar_y[b] - bar_y[max(0, b - 30)]
-            prom_b = cand_prominences[i_cand] if i_cand < len(cand_prominences) else drop_b
-            
-            # 排除相對深度過淺的離群波峰 (如回槓或出槓的微小位移)
-            if prom_b < min_prom_thresh:
-                continue
-
-            # 真正的深蹲波谷條件：
-            # 1. 顯著深蹲位移特判：槓鈴下沉幅度顯著 (prom >= 75px) 且膝關節有彎曲 (knee < 155°)，避免受限於髖部關鍵點遮擋或純膝主導
-            # 2. 標準深蹲條件：膝關節與髖關節皆有實質屈曲 (knee < 148° 且 hip < 155°)
-            # 3. 淺蹲/下蹲不足但有顯著位移：(knee < 162° 且 hip < 162° 且 prom >= 45px)
-            is_valid_bottom = (
-                (prom_b >= 75.0 and knee_a < 155.0) or
-                (knee_a < 148.0 and hip_a < 155.0) or
-                (knee_a < 162.0 and hip_a < 162.0 and prom_b >= 45.0)
-            )
-            if is_valid_bottom:
-                bottoms.append(b)
+        # 1. 尋找所有深蹲的波谷 (bar_y 的波峰，因為 y 向下為正)
+        # prominence=100 確保起槓或收槓時的小碎步被忽略
+        bottoms, _ = find_peaks(bar_y, prominence=100)
         
         reps = []
         for i_peak, bottom_idx in enumerate(bottoms):
             is_first = (i_peak == 0)
             is_last = (i_peak == len(bottoms) - 1)
             
-            # --- 2. 尋找起始點 (依使用者指定之三段式架構) ---
-            bottom_knee_angle = knee_angles_val[bottom_idx]
-            is_normal_depth = (bottom_knee_angle < 135.0)
-
+            # --- 2. 尋找起始點 ---
+            start_idx = -1
             if is_first:
-                # 【第 1 個波】：
-                # 主要判定：以 Y 軸槓鈴往回尋找斜率開始顯著向下 (下蹲開始) 的前一個平穩區間終點，且切線斜率達到 -45 度
-                # 輔助判定：利用膝關節和髖關節角度當作輔助判定
-                search_limit = max(0, bottom_idx - 90)
-                
-                # 從波谷往回尋找波峰：收集前兩個候選波峰，若第二個波峰比第一個高很多，以第二個為主
-                first_peak = bottom_idx
-                second_peak = None
-                in_valley = True  # 剛開始從波谷往上爬
-                for i in range(bottom_idx - 1, search_limit, -1):
-                    if bar_y[i] <= bar_y[first_peak]:
-                        first_peak = i
-                        in_valley = True
-                    else:
-                        if in_valley and i < bottom_idx - 10 and all(bar_y[k] > bar_y[first_peak] for k in range(max(0, i - 2), i + 1)):
-                            # 找到第一個局部波峰 (局部最低點後的第一次上升)
-                            # 繼續往左看有沒有更高的第二個波峰
-                            second_peak = first_peak  # 暫存第一個候選波峰
-                            in_valley = False
-                            # 繼續搜尋，看是否有更高的波峰
-                            for j in range(i, search_limit, -1):
-                                if bar_y[j] <= bar_y[second_peak]:
-                                    second_peak = j
-                            break
-                
-                # 若第二個波峰存在，且比第一個波峰高出 >= 80px (視覺上明顯更高)，以第二個波峰為主
-                if second_peak is not None and bar_y[second_peak] < bar_y[first_peak] - 80:
-                    highest_point_before = second_peak
-                else:
-                    highest_point_before = first_peak
+                # 第一下：往回推找 is_idle (因為前面沒有其他波谷，必須仰賴靜止來排除預備碎步)
+                highest_point_before = bottom_idx
+                in_descent = False
+                for i in range(bottom_idx, 0, -1):
+                    if bar_y[i] < bar_y[highest_point_before]:
+                        highest_point_before = i
+                        
+                    v = bar_v_y[i]
+                    hv = hip_v[i]
+                    kv = knee_v[i]
+                    hrv = hip_rel_v[i]
+                    krv = knee_rel_v[i]
                     
-                standing_knee = knee_angles_val[highest_point_before]
-                standing_hip = hip_angles_val[highest_point_before]
-                standing_bar_y = bar_y[highest_point_before]
-                
-                # 從波谷向左回溯鎖定起始發動點：
-                # 1. 主要判定：Y 軸槓鈴斜率達到 -45 度 (離開平穩區間，開始顯著向下下沉)
-                # 2. 輔助判定：膝關節與髖關節角度開始解鎖屈曲
+                    is_active = (
+                        (v > v_start_thresh) or (hv < -hip_start_thresh) or (kv < -knee_start_thresh) or
+                        (abs(hrv) > hip_rel_start_thresh) or (abs(krv) > knee_rel_start_thresh)
+                    )
+                    is_idle = (
+                        (abs(v) < v_start_thresh) and (abs(hv) < hip_start_thresh) and (abs(kv) < knee_start_thresh) and
+                        (abs(hrv) < hip_rel_start_thresh) and (abs(krv) < knee_rel_start_thresh)
+                    )
+                    
+                    if not in_descent:
+                        if is_active:
+                            in_descent = True
+                    else:
+                        if is_idle and (bar_y[bottom_idx] - bar_y[i] >= 100):
+                            start_idx = i
+                            break
+                            
+                if start_idx == -1:
+                    start_idx = highest_point_before
+            else:
+                # 中間：不使用 is_idle。先找到與上一組之間的最高點，然後「往後推」找第一個滿足 0.2 std 的點 (啟動點)
+                prev_bottom = bottoms[i_peak - 1]
+                highest_point_before = bottom_idx
+                for i in range(bottom_idx, prev_bottom, -1):
+                    if bar_y[i] < bar_y[highest_point_before]:
+                        highest_point_before = i
+                        
                 start_idx = highest_point_before
-                for i in range(bottom_idx - 1, highest_point_before, -1):
-                    # 主要判定：Y 軸槓鈴切線斜率達到約 -45 度 (每幀下沉 >= 1.0px 或向下速度 >= 25 px/s)
-                    is_slope_45_deg = (bar_v_y[i] >= 25.0) or (bar_y[i] - bar_y[max(0, i - 2)] >= 2.0)
+                
+                v_ready = (bar_v_y[highest_point_before] <= v_start_thresh)
+                hv_ready = (hip_v[highest_point_before] >= -hip_start_thresh)
+                kv_ready = (knee_v[highest_point_before] >= -knee_start_thresh)
+                hrv_ready = (abs(hip_rel_v[highest_point_before]) <= hip_rel_start_thresh)
+                krv_ready = (abs(knee_rel_v[highest_point_before]) <= knee_rel_start_thresh)
+                
+                active_consecutive = 0
+                for i in range(highest_point_before, bottom_idx):
+                    v = bar_v_y[i]
+                    hv = hip_v[i]
+                    kv = knee_v[i]
+                    hrv = hip_rel_v[i]
+                    krv = knee_rel_v[i]
                     
-                    # 輔助判定：膝/髖關節角度開始解鎖屈曲
-                    has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.5)
-                    has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.5)
+                    if v <= v_start_thresh: v_ready = True
+                    if hv >= -hip_start_thresh: hv_ready = True
+                    if kv >= -knee_start_thresh: kv_ready = True
+                    if abs(hrv) <= hip_rel_start_thresh: hrv_ready = True
+                    if abs(krv) <= knee_rel_start_thresh: krv_ready = True
                     
-                    if is_slope_45_deg or has_knee_flexion or has_hip_flexion:
-                        start_idx = i
+                    is_active_frame = False
+                    if v_ready and (v > v_start_thresh): is_active_frame = True
+                    if hv_ready and (hv < -hip_start_thresh): is_active_frame = True
+                    if kv_ready and (kv < -knee_start_thresh): is_active_frame = True
+                    if hrv_ready and (abs(hrv) > hip_rel_start_thresh): is_active_frame = True
+                    if krv_ready and (abs(krv) > knee_rel_start_thresh): is_active_frame = True
+                    
+                    if is_active_frame:
+                        active_consecutive += 1
+                        if active_consecutive >= 3:
+                            start_cand = i - 2
+                            if (bar_y[bottom_idx] - bar_y[start_cand] >= 100):
+                                start_idx = start_cand
+                                break
                     else:
-                        start_idx = i
-                        break
-            else:
-                # 【其他波 (非第 1 下)】：依下蹲深度分兩情況
-                search_start = bottoms[i_peak - 1]
-                search_limit = max(search_start, bottom_idx - 150)
-                
-                if is_normal_depth:
-                    # 【情況 A：關節角度大 / 正常深蹲 (波谷膝角 < 135°)】
-                    # 1. 主幹：以關節角度 (膝/髖關節) 回到打直站立姿態作為起始點判斷
-                    # 2. 輔助：以 Y 軸當輔助，確認落在兩下之間的第一個波峰最高處
-                    highest_bar_peak = search_start + int(np.argmin(bar_y[search_start:bottom_idx]))
-                    highest_point_before = highest_bar_peak
-                    
-                    for i in range(bottom_idx - 1, search_limit, -1):
-                        if knee_angles_val[i] >= 165.0 or hip_angles_val[i] >= 161.0:
-                            highest_point_before = i
-                            if i <= highest_bar_peak + 5:
-                                break
-                                
-                    standing_knee = knee_angles_val[highest_point_before]
-                    standing_hip = hip_angles_val[highest_point_before]
-                    standing_bar_y = bar_y[highest_point_before]
-                    
-                    start_idx = highest_point_before
-                    for i in range(bottom_idx - 1, highest_point_before, -1):
-                        has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.5)
-                        has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.5)
-                        is_slope_45_deg = (bar_v_y[i] >= 25.0) or (bar_y[i] - bar_y[max(0, i - 2)] >= 2.0)
+                        active_consecutive = 0
                         
-                        if has_knee_flexion or has_hip_flexion or is_slope_45_deg:
-                            start_idx = i
-                        else:
-                            start_idx = i
-                            break
-                else:
-                    # 【情況 B：關節角度小 / 淺蹲 / 下蹲不足 (波谷膝角 >= 135°)】
-                    # 1. 主幹：以 Y 軸從波谷往回搜尋到第一個波峰
-                    highest_point_before = bottom_idx
-                    for i in range(bottom_idx - 1, search_limit, -1):
-                        if bar_y[i] <= bar_y[highest_point_before]:
-                            highest_point_before = i
-                        else:
-                            real_drop = bar_y[bottom_idx] - bar_y[highest_point_before]
-                            if real_drop >= 15 and i < bottom_idx - 10 and all(bar_y[k] > bar_y[highest_point_before] for k in range(max(0, i - 2), i + 1)):
-                                break
-                                
-                    standing_knee = knee_angles_val[highest_point_before]
-                    standing_hip = hip_angles_val[highest_point_before]
-                    standing_bar_y = bar_y[highest_point_before]
-                    
-                    # 2. 輔助：以關節角度當輔助看是否在準備要蹲的起始點
-                    start_idx = highest_point_before
-                    for i in range(bottom_idx - 1, highest_point_before, -1):
-                        has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.0)
-                        has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.0)
-                        has_bar_descent = (bar_y[i] > standing_bar_y + 5.0)
-                        
-                        if has_knee_flexion or has_hip_flexion or has_bar_descent:
-                            start_idx = i
-                        else:
-                            start_idx = i
-                            break
-                        
-            # --- 3. 尋找結束點 (主要判定：Y軸槓鈴第一個波峰最高點，若第二個波峰遠大於第一個則取第二個) ---
+            # --- 3. 尋找結束點 ---
+            end_idx = -1
             if is_last:
-                search_limit = min(n_frames, bottom_idx + 120)
-            else:
-                search_limit = min(bottoms[i_peak + 1], bottom_idx + 150)
-                
-            # 主要判定：從波谷往後尋找第一個波峰與第二個候選波峰
-            first_peak = bottom_idx
-            second_peak = None
-            in_valley = True
-            for i in range(bottom_idx + 1, search_limit):
-                if bar_y[i] <= bar_y[first_peak]:
-                    first_peak = i
-                    in_valley = True
-                else:
-                    if in_valley and (bar_y[bottom_idx] - bar_y[first_peak] >= 15) and i > bottom_idx + 8:
-                        if all(bar_y[k] >= bar_y[first_peak] for k in range(i, min(n_frames, i + 3))):
-                            # 找到第一個局部波峰，暫存並繼續向後搜尋第二個候選波峰
-                            second_peak = first_peak
-                            in_valley = False
-                            for j in range(i, search_limit):
-                                if bar_y[j] <= bar_y[second_peak]:
-                                    second_peak = j
-                            break
-            
-            # 若第二個波峰遠大於第一個波峰 (高出 >= 80px，或第一個波峰處關節未伸直 knee < 140° 而第二個波峰已站直 knee >= 155°)，以第二個波峰為主
-            if second_peak is not None:
-                is_much_higher = (bar_y[second_peak] < bar_y[first_peak] - 80)
-                is_joint_straightened = (knee_angles_val[first_peak] < 140.0 and knee_angles_val[second_peak] >= 155.0)
-                if is_much_higher or is_joint_straightened:
-                    first_peak = second_peak
-            
-            # 輔助判定：關節角度上升 (從波谷向波峰推進，鎖定關節伸展完成與槓鈴上升進入平穩的瞬間)
-            standing_knee = knee_angles_val[first_peak]
-            standing_hip = hip_angles_val[first_peak]
-            
-            end_idx = first_peak
-            for i in range(bottom_idx + 1, first_peak + 1):
-                has_knee_flexion = (knee_angles_val[i] < standing_knee - 1.0)
-                has_hip_flexion = (hip_angles_val[i] < standing_hip - 1.0)
-                is_rising_slope = (bar_v_y[i] <= -25.0) or (bar_y[i] - bar_y[min(n_frames - 1, i + 2)] >= 2.0)
-                
-                if has_knee_flexion or has_hip_flexion or is_rising_slope:
-                    end_idx = i
-                else:
-                    end_idx = i
-                    break
+                # 最後一下：往前推找 is_idle (排除做完走回架上的碎步)
+                highest_point_after = bottom_idx
+                in_ascent = False
+                for i in range(bottom_idx, n_frames):
+                    if bar_y[i] < bar_y[highest_point_after]:
+                        highest_point_after = i
                         
-            # 確保找到合理的區間且相對最高點至少有 30 的落差
-            drop_from_top = bar_y[bottom_idx] - bar_y[highest_point_before]
+                    v = bar_v_y[i]
+                    hv = hip_v[i]
+                    kv = knee_v[i]
+                    hrv = hip_rel_v[i]
+                    krv = knee_rel_v[i]
+                    
+                    is_active = (
+                        (v < -v_end_thresh) or (hv > hip_end_thresh) or (kv > knee_end_thresh) or
+                        (abs(hrv) > hip_rel_end_thresh) or (abs(krv) > knee_rel_end_thresh)
+                    )
+                    is_idle = (
+                        (abs(v) < v_end_thresh) and (abs(hv) < hip_end_thresh) and (abs(kv) < knee_end_thresh) and
+                        (abs(hrv) < hip_rel_end_thresh) and (abs(krv) < knee_rel_end_thresh)
+                    )
+                    
+                    if not in_ascent:
+                        if is_active:
+                            in_ascent = True
+                    else:
+                        if is_idle and (bar_y[bottom_idx] - bar_y[i] >= 100):
+                            end_idx = i
+                            break
+                            
+                if end_idx == -1:
+                    end_idx = highest_point_after
+            else:
+                # 中間：不使用 is_idle。找到與下一組之間的最高點，然後「往回推」找剛好觸發 0.2 std 的點 (結束點)
+                next_bottom = bottoms[i_peak + 1]
+                highest_point_after = bottom_idx
+                for i in range(bottom_idx, next_bottom):
+                    if bar_y[i] < bar_y[highest_point_after]:
+                        highest_point_after = i
+                        
+                end_idx = highest_point_after
+                
+                v_ready = (bar_v_y[highest_point_after] >= -v_end_thresh)
+                hv_ready = (hip_v[highest_point_after] <= hip_end_thresh)
+                kv_ready = (knee_v[highest_point_after] <= knee_end_thresh)
+                hrv_ready = (abs(hip_rel_v[highest_point_after]) <= hip_rel_end_thresh)
+                krv_ready = (abs(knee_rel_v[highest_point_after]) <= knee_rel_end_thresh)
+                
+                active_consecutive = 0
+                for i in range(highest_point_after, bottom_idx, -1):
+                    v = bar_v_y[i]
+                    hv = hip_v[i]
+                    kv = knee_v[i]
+                    hrv = hip_rel_v[i]
+                    krv = knee_rel_v[i]
+                    
+                    if v >= -v_end_thresh: v_ready = True
+                    if hv <= hip_end_thresh: hv_ready = True
+                    if kv <= knee_end_thresh: kv_ready = True
+                    if abs(hrv) <= hip_rel_end_thresh: hrv_ready = True
+                    if abs(krv) <= knee_rel_end_thresh: krv_ready = True
+                    
+                    is_active_frame = False
+                    if v_ready and (v < -v_end_thresh): is_active_frame = True
+                    if hv_ready and (hv > hip_end_thresh): is_active_frame = True
+                    if kv_ready and (kv > knee_end_thresh): is_active_frame = True
+                    if hrv_ready and (abs(hrv) > hip_rel_end_thresh): is_active_frame = True
+                    if krv_ready and (abs(krv) > knee_rel_end_thresh): is_active_frame = True
+                    
+                    if is_active_frame:
+                        active_consecutive += 1
+                        if active_consecutive >= 3:
+                            end_cand = i + 2
+                            if (bar_y[bottom_idx] - bar_y[end_cand] >= 100):
+                                end_idx = end_cand
+                                break
+                    else:
+                        active_consecutive = 0
+                        
+            # 確保找到合理的區間且至少有 100 的落差
             if end_idx > start_idx and (end_idx - start_idx > self.fps // 2):
-                if drop_from_top >= 30:
+                if (bar_y[bottom_idx] - bar_y[start_idx] >= 100) and (bar_y[bottom_idx] - bar_y[end_idx] >= 100):
                     reps.append({
                         'start': start_idx,
                         'bottom': bottom_idx,
